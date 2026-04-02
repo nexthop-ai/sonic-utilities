@@ -51,6 +51,7 @@ from .utils import log
 from . import aaa
 from . import bmc
 from . import chassis_modules
+from . import liquidcool
 from . import console
 from . import feature
 from . import fabric
@@ -1630,6 +1631,7 @@ config.add_command(aaa.tacacs)
 config.add_command(aaa.radius)
 config.add_command(bmc.bmc)
 config.add_command(chassis_modules.chassis)
+config.add_command(liquidcool.liquidcool)
 config.add_command(console.console)
 config.add_command(fabric.fabric)
 config.add_command(feature.feature)

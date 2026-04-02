@@ -145,8 +145,8 @@ def shutdown_chassis_module(db, chassis_module_name):
     config_db = db.cfgdb
     ctx = click.get_current_context()
 
-    if not chassis_module_name.startswith(("SUPERVISOR", "LINE-CARD", "FABRIC-CARD", "DPU")):
-        ctx.fail("'module_name' has to begin with 'SUPERVISOR', 'LINE-CARD', 'FABRIC-CARD', or 'DPU'")
+    if not chassis_module_name.startswith(("SUPERVISOR", "LINE-CARD", "FABRIC-CARD", "DPU", "SWITCH-HOST")):
+        ctx.fail("'module_name' has to begin with 'SUPERVISOR', 'LINE-CARD', 'FABRIC-CARD', 'DPU', or 'SWITCH-HOST'")
 
     if get_config_module_state(db, chassis_module_name) == 'down':
         click.echo(f"Module {chassis_module_name} is already in down state")
@@ -186,8 +186,8 @@ def startup_chassis_module(db, chassis_module_name):
     config_db = db.cfgdb
     ctx = click.get_current_context()
 
-    if not chassis_module_name.startswith(("SUPERVISOR", "LINE-CARD", "FABRIC-CARD", "DPU")):
-        ctx.fail("'module_name' has to begin with 'SUPERVISOR', 'LINE-CARD', 'FABRIC-CARD', or 'DPU'")
+    if not chassis_module_name.startswith(("SUPERVISOR", "LINE-CARD", "FABRIC-CARD", "DPU", "SWITCH-HOST")):
+        ctx.fail("'module_name' has to begin with 'SUPERVISOR', 'LINE-CARD', 'FABRIC-CARD', 'DPU', or 'SWITCH-HOST'")
         return
 
     if get_config_module_state(db, chassis_module_name) == 'up':
