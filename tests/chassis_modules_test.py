@@ -567,3 +567,140 @@ class TestChassisModules(object):
     def teardown_class(cls):
         print("TEARDOWN")
         os.environ["UTILITIES_UNIT_TESTING"] = "0"
+
+
+class TestChassisModuleTimingConfig(object):
+    """Tests for 'config chassis modules power-on-delay' and 'shutdown-timeout'"""
+
+    @classmethod
+    def setup_class(cls):
+        print("SETUP")
+        os.environ["UTILITIES_UNIT_TESTING"] = "1"
+        import importlib
+        import config.chassis_modules as cm
+        with mock.patch('config.chassis_modules.is_switch_bmc', return_value=True):
+            importlib.reload(cm)
+        cls.modules = cm.modules
+
+    def test_power_on_delay_switch_host(self):
+        runner = CliRunner()
+        db = Db()
+        result = runner.invoke(
+            self.modules.commands["power-on-delay"],
+            ["SWITCH-HOST", "300"],
+            obj=db
+        )
+        print(result.output)
+        assert result.exit_code == 0
+        assert "300" in result.output
+        entry = db.cfgdb.get_entry("CHASSIS_MODULE", "SWITCH-HOST")
+        assert entry.get("power_on_delay") == "300.0"
+
+    def test_power_on_delay_zero(self):
+        runner = CliRunner()
+        db = Db()
+        result = runner.invoke(
+            self.modules.commands["power-on-delay"],
+            ["SWITCH-HOST", "0"],
+            obj=db
+        )
+        print(result.output)
+        assert result.exit_code == 0
+        entry = db.cfgdb.get_entry("CHASSIS_MODULE", "SWITCH-HOST")
+        assert entry.get("power_on_delay") == "0.0"
+
+    def test_power_on_delay_negative_rejected(self):
+        runner = CliRunner()
+        db = Db()
+        result = runner.invoke(
+            self.modules.commands["power-on-delay"],
+            ["SWITCH-HOST", "-1"],
+            obj=db
+        )
+        print(result.output)
+        assert result.exit_code != 0
+
+    def test_power_on_delay_non_switch_host_rejected(self):
+        runner = CliRunner()
+        db = Db()
+        result = runner.invoke(
+            self.modules.commands["power-on-delay"],
+            ["LINE-CARD0", "300"],
+            obj=db
+        )
+        print(result.output)
+        assert result.exit_code != 0
+        assert "SWITCH-HOST" in result.output
+
+    def test_shutdown_timeout_switch_host(self):
+        runner = CliRunner()
+        db = Db()
+        result = runner.invoke(
+            self.modules.commands["shutdown-timeout"],
+            ["SWITCH-HOST", "120"],
+            obj=db
+        )
+        print(result.output)
+        assert result.exit_code == 0
+        assert "120" in result.output
+        entry = db.cfgdb.get_entry("CHASSIS_MODULE", "SWITCH-HOST")
+        assert entry.get("shutdown_timeout") == "120.0"
+
+    def test_shutdown_timeout_zero_immediate_poweroff(self):
+        runner = CliRunner()
+        db = Db()
+        result = runner.invoke(
+            self.modules.commands["shutdown-timeout"],
+            ["SWITCH-HOST", "0"],
+            obj=db
+        )
+        print(result.output)
+        assert result.exit_code == 0
+        entry = db.cfgdb.get_entry("CHASSIS_MODULE", "SWITCH-HOST")
+        assert entry.get("shutdown_timeout") == "0.0"
+
+    def test_shutdown_timeout_negative_rejected(self):
+        runner = CliRunner()
+        db = Db()
+        result = runner.invoke(
+            self.modules.commands["shutdown-timeout"],
+            ["SWITCH-HOST", "-5"],
+            obj=db
+        )
+        print(result.output)
+        assert result.exit_code != 0
+
+    def test_shutdown_timeout_non_switch_host_rejected(self):
+        runner = CliRunner()
+        db = Db()
+        result = runner.invoke(
+            self.modules.commands["shutdown-timeout"],
+            ["FABRIC-CARD0", "120"],
+            obj=db
+        )
+        print(result.output)
+        assert result.exit_code != 0
+        assert "SWITCH-HOST" in result.output
+
+    def test_both_fields_preserved_in_db(self):
+        """Setting one field does not overwrite the other."""
+        runner = CliRunner()
+        db = Db()
+        runner.invoke(
+            self.modules.commands["power-on-delay"],
+            ["SWITCH-HOST", "60"],
+            obj=db
+        )
+        runner.invoke(
+            self.modules.commands["shutdown-timeout"],
+            ["SWITCH-HOST", "30"],
+            obj=db
+        )
+        entry = db.cfgdb.get_entry("CHASSIS_MODULE", "SWITCH-HOST")
+        assert entry.get("power_on_delay") == "60.0"
+        assert entry.get("shutdown_timeout") == "30.0"
+
+    @classmethod
+    def teardown_class(cls):
+        print("TEARDOWN")
+        os.environ["UTILITIES_UNIT_TESTING"] = "0"

@@ -8,6 +8,7 @@ import utilities_common.cli as clicommon
 from utilities_common.chassis import is_smartswitch, get_all_dpus
 from utilities_common.module import ModuleHelper
 from datetime import datetime, timedelta, timezone
+from sonic_py_common.device_info import is_switch_bmc
 
 TIMEOUT_SECS = 10
 TRANSITION_TIMEOUT = timedelta(seconds=240)  # 4 minutes
@@ -212,3 +213,51 @@ def startup_chassis_module(db, chassis_module_name):
     if chassis_module_name.startswith("FABRIC-CARD"):
         if not check_config_module_state_with_timeout(ctx, db, chassis_module_name, 'up'):
             fabric_module_set_admin_status(db, chassis_module_name, 'up')
+
+if is_switch_bmc():
+
+    #
+    # 'power-on-delay' subcommand ('config chassis modules power-on-delay ...')
+    #
+    @modules.command('power-on-delay')
+    @clicommon.pass_db
+    @click.argument('chassis_module_name', metavar='<module_name>', required=True)
+    @click.argument('seconds', metavar='<seconds>', required=True, type=float)
+    def set_power_on_delay(db, chassis_module_name, seconds):
+        """Configure delay (in seconds) BMC waits before powering on Switch-Host (default: 300)"""
+        ctx = click.get_current_context()
+
+        if not chassis_module_name.startswith("SWITCH-HOST"):
+            ctx.fail("'power-on-delay' is only applicable to SWITCH-HOST modules")
+
+        if seconds < 0:
+            ctx.fail("'seconds' must be a non-negative value")
+
+        config_db = db.cfgdb
+        fvs = config_db.get_entry('CHASSIS_MODULE', chassis_module_name) or {}
+        fvs['power_on_delay'] = str(seconds)
+        config_db.set_entry('CHASSIS_MODULE', chassis_module_name, fvs)
+        click.echo(f"Power-on-delay for {chassis_module_name} set to {seconds} seconds")
+
+    #
+    # 'shutdown-timeout' subcommand ('config chassis modules shutdown-timeout ...')
+    #
+    @modules.command('shutdown-timeout')
+    @clicommon.pass_db
+    @click.argument('chassis_module_name', metavar='<module_name>', required=True)
+    @click.argument('seconds', metavar='<seconds>', required=True, type=float)
+    def set_shutdown_timeout(db, chassis_module_name, seconds):
+        """Configure graceful-shutdown timeout (in seconds) before BMC forces power-off (default: 120)"""
+        ctx = click.get_current_context()
+
+        if not chassis_module_name.startswith("SWITCH-HOST"):
+            ctx.fail("'shutdown-timeout' is only applicable to SWITCH-HOST modules")
+
+        if seconds < 0:
+            ctx.fail("'seconds' must be a non-negative value")
+
+        config_db = db.cfgdb
+        fvs = config_db.get_entry('CHASSIS_MODULE', chassis_module_name) or {}
+        fvs['shutdown_timeout'] = str(seconds)
+        config_db.set_entry('CHASSIS_MODULE', chassis_module_name, fvs)
+        click.echo(f"Shutdown-timeout for {chassis_module_name} set to {seconds} seconds")
