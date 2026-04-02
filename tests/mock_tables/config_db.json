@@ -2908,9 +2908,6 @@
      },
      "COPP_TRAP|neighbor_miss": {
         "NULL":"NULL"
-<<<<<<< HEAD
-     }
-=======
      },
      "LOCAL_USER|admin": {
         "role": "administrator",
@@ -2952,6 +2949,4 @@
         "enterprise-id": "54321",
         "ifa": "true"
     }
->>>>>>> 5b7ef907 (NOS-3452: add show command for IFA configuration (#382))
-
 }
