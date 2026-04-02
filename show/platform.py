@@ -340,11 +340,14 @@ def leak_control_policy():
         db = Db()
         entry = db.cfgdb.get_entry(LEAK_CONTROL_POLICY_TABLE, LEAK_CONTROL_POLICY_KEY)
         click.echo(" system_leak_policy              : {}".format(entry.get('system_leak_policy', 'enabled')))
-        click.echo(" system_critical_leak_action     : {}".format(entry.get('system_critical_leak_action', 'power_off')))
+        critical_action = entry.get('system_critical_leak_action', 'power_off')
+        click.echo(" system_critical_leak_action     : {}".format(critical_action))
         click.echo(" system_minor_leak_action        : {}".format(entry.get('system_minor_leak_action', 'syslog_only')))
         click.echo(" rack_mgr_leak_policy            : {}".format(entry.get('rack_mgr_leak_policy', 'enabled')))
-        click.echo(" rack_mgr_critical_alert_action  : {}".format(entry.get('rack_mgr_critical_alert_action', 'syslog_only')))
-        click.echo(" rack_mgr_minor_alert_action     : {}".format(entry.get('rack_mgr_minor_alert_action', 'syslog_only')))
+        rack_critical_action = entry.get('rack_mgr_critical_alert_action', 'syslog_only')
+        click.echo(" rack_mgr_critical_alert_action  : {}".format(rack_critical_action))
+        rack_minor_action = entry.get('rack_mgr_minor_alert_action', 'syslog_only')
+        click.echo(" rack_mgr_minor_alert_action     : {}".format(rack_minor_action))
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
 

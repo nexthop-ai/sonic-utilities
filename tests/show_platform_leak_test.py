@@ -1,7 +1,6 @@
 import os
 import sys
 
-import pytest
 from click.testing import CliRunner
 from unittest.mock import MagicMock, patch
 
@@ -9,7 +8,7 @@ test_path = os.path.dirname(os.path.abspath(__file__))
 modules_path = os.path.dirname(test_path)
 sys.path.insert(0, modules_path)
 
-import show.platform as show_platform
+import show.platform as show_platform  # noqa: E402
 
 
 def _make_state_db(table_data):

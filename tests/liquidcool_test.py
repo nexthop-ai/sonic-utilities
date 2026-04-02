@@ -8,7 +8,7 @@ test_path = os.path.dirname(os.path.abspath(__file__))
 modules_path = os.path.dirname(test_path)
 sys.path.insert(0, modules_path)
 
-from config.liquidcool import liquidcool
+from config.liquidcool import liquidcool  # noqa: E402
 
 
 def _make_mock_db(cfgdb=None):
