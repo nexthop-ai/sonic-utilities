@@ -310,7 +310,7 @@ LEAK_CONTROL_POLICY_TABLE = 'LEAK_CONTROL_POLICY'
 LEAK_CONTROL_POLICY_KEY = 'config'
 RACK_MANAGER_ALERT_TABLE = 'RACK_MANAGER_ALERT'
 LEAK_PROFILE_TABLE = 'LEAK_PROFILE'
-LIQUID_COOLING_DEVICE_TABLE = 'LIQUID_COOLING_DEVICE'
+LIQUID_COOLING_INFO_TABLE = 'LIQUID_COOLING_INFO'
 
 
 def _get_state_db():
@@ -406,7 +406,7 @@ def leak_status():
     """Show leak sensor status"""
     try:
         state_db = _get_state_db()
-        keys = state_db.keys(state_db.STATE_DB, f"{LIQUID_COOLING_DEVICE_TABLE}|*") or []
+        keys = state_db.keys(state_db.STATE_DB, f"{LIQUID_COOLING_INFO_TABLE}|*") or []
         header = ['Name', 'Leak', 'Leak-sensor-status', 'leak-sensor-type', 'leak-severity']
         rows = []
         for key in sorted(keys):

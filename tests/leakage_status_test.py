@@ -33,15 +33,15 @@ class TestLeakStatus(object):
     def test_show_platform_leak_status(self):
         runner = CliRunner()
         table_data = {
-            'LIQUID_COOLING_DEVICE|leakage_sensors1': {
+            'LIQUID_COOLING_INFO|leakage_sensors1': {
                 'name': 'leakage1', 'leaking': 'No',
                 'leak_sensor_status': 'OK', 'type': 'rope', 'leak_severity': 'N/A',
             },
-            'LIQUID_COOLING_DEVICE|leakage_sensors2': {
+            'LIQUID_COOLING_INFO|leakage_sensors2': {
                 'name': 'leakage2', 'leaking': 'No',
                 'leak_sensor_status': 'OK', 'type': 'spot', 'leak_severity': 'N/A',
             },
-            'LIQUID_COOLING_DEVICE|leakage_sensors3': {
+            'LIQUID_COOLING_INFO|leakage_sensors3': {
                 'name': 'leakage3', 'leaking': 'Yes',
                 'leak_sensor_status': 'OK', 'type': 'rope', 'leak_severity': 'MINOR',
             },

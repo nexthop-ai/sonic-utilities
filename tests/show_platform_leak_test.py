@@ -176,14 +176,14 @@ class TestShowPlatformLeakStatus(object):
     def test_leak_status_with_data(self):
         runner = CliRunner()
         table_data = {
-            'LIQUID_COOLING_DEVICE|leakage_sensors1': {
+            'LIQUID_COOLING_INFO|leakage_sensors1': {
                 'name': 'leak_sensors1',
                 'leaking': 'YES',
                 'leak_sensor_status': 'OK',
                 'type': 'rope',
                 'leak_severity': 'MINOR',
             },
-            'LIQUID_COOLING_DEVICE|leakage_sensors2': {
+            'LIQUID_COOLING_INFO|leakage_sensors2': {
                 'name': 'leak_sensors2',
                 'leaking': 'NO',
                 'leak_sensor_status': 'FAULTY',
@@ -208,7 +208,7 @@ class TestShowPlatformLeakStatus(object):
     def test_leak_status_critical_sensor(self):
         runner = CliRunner()
         table_data = {
-            'LIQUID_COOLING_DEVICE|leakage_sensorsX': {
+            'LIQUID_COOLING_INFO|leakage_sensorsX': {
                 'name': 'leak_sensorsX',
                 'leaking': 'Yes',
                 'leak_sensor_status': 'OK',
