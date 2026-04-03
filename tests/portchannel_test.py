@@ -215,7 +215,55 @@ class TestPortChannel(object):
         print(result.exit_code)
         print(result.output)
         assert result.exit_code != 0
-        assert "Error:  Ethernet0 has ip address configured" in result.output
+        assert "Error: Ethernet0 is a routed interface" in result.output
+
+    def test_add_portchannel_member_which_has_ip_and_vrf(self):
+        runner = CliRunner()
+        db = Db()
+        obj = {'db': db.cfgdb}
+
+        # Ethernet40 has an INTERFACE entry (ipv6_use_link_local_only)
+        # Temporarily add VRF binding to test the VRF+IP case
+        original_entry = db.cfgdb.get_entry('INTERFACE', 'Ethernet40')
+        db.cfgdb.set_entry('INTERFACE', 'Ethernet40', {'vrf_name': 'Vrf_test', 'ipv6_use_link_local_only': 'enable'})
+
+        # Should fail with "is a routed interface" message
+        result = runner.invoke(config.config.commands["portchannel"].commands["member"].commands["add"],
+                               ["PortChannel1001", "Ethernet40"], obj=obj)
+        print(result.exit_code)
+        print(result.output)
+
+        # Restore original config
+        db.cfgdb.set_entry('INTERFACE', 'Ethernet40', original_entry)
+
+        assert result.exit_code != 0
+        assert "Error: Ethernet40 is a routed interface" in result.output
+
+    def test_add_portchannel_member_switchport_success(self):
+        runner = CliRunner()
+        db = Db()
+        obj = {'db': db.cfgdb, 'db_wrap': db, 'namespace': ''}
+
+        # Ethernet52: free port with TPID=0x8100, mode=routed (same as existing PC members)
+        # Not in INTERFACE, VLAN, PortChannel, or subinterfaces - should be addable
+        result = runner.invoke(config.config.commands["portchannel"].commands["member"].commands["add"],
+                               ["PortChannel1001", "Ethernet52"], obj=obj)
+        print(result.exit_code)
+        print(result.output)
+        assert result.exit_code == 0
+
+        # Verify it was added
+        assert db.cfgdb.get_entry('PORTCHANNEL_MEMBER', ('PortChannel1001', 'Ethernet52')) is not None
+
+        # Remove it to restore original config
+        result = runner.invoke(config.config.commands["portchannel"].commands["member"].commands["del"],
+                               ["PortChannel1001", "Ethernet52"], obj=obj)
+        print(result.exit_code)
+        print(result.output)
+        assert result.exit_code == 0
+
+        # Verify it was removed - config should be back to original state
+        assert db.cfgdb.get_entry('PORTCHANNEL_MEMBER', ('PortChannel1001', 'Ethernet52')) == {}
 
     def test_add_portchannel_member_which_has_subintf(self):
         runner = CliRunner()

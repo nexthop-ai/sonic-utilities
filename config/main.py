@@ -2921,12 +2921,12 @@ def add_portchannel_member(ctx, portchannel_name, port_name):
         if is_portchannel_present_in_db(db, portchannel_name) is False:
             ctx.fail("{} is not present.".format(portchannel_name))
 
-        # Don't allow a port to be member of port channel if it is configured with an IP address
+        # Don't allow a port to be member of port channel if it is a routed interface
         for key,value in db.get_table('INTERFACE').items():
             if type(key) == tuple:
                 continue
             if key == port_name:
-                ctx.fail(" {} has ip address configured".format(port_name))  # TODO: MISSING CONSTRAINT IN YANG MODEL
+                ctx.fail("{} is a routed interface".format(port_name))  # TODO: MISSING CONSTRAINT IN YANG MODEL
                 return
 
         for key in db.get_keys('VLAN_SUB_INTERFACE'):
