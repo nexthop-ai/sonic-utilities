@@ -224,7 +224,7 @@ if is_switch_bmc():
     @click.argument('chassis_module_name', metavar='<module_name>', required=True)
     @click.argument('seconds', metavar='<seconds>', required=True, type=float)
     def set_power_on_delay(db, chassis_module_name, seconds):
-        """Configure delay (in seconds) BMC waits before powering on Switch-Host (default: 300)"""
+        """Configure delay (in seconds) BMC waits before powering on Switch-Host (default: 0)"""
         ctx = click.get_current_context()
 
         if not chassis_module_name.startswith("SWITCH-HOST"):

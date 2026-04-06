@@ -8,7 +8,7 @@ test_path = os.path.dirname(os.path.abspath(__file__))
 modules_path = os.path.dirname(test_path)
 sys.path.insert(0, modules_path)
 
-from config.liquidcool import liquidcool  # noqa: E402
+from config.liquid_cool import liquid_cool  # noqa: E402
 
 
 def _make_mock_db(cfgdb=None):
@@ -20,7 +20,7 @@ def _make_mock_db(cfgdb=None):
 
 
 class TestLeakControl(object):
-    """Tests for 'config liquidcool leak-control' command"""
+    """Tests for 'config liquid_cool leak-control' command"""
 
     @classmethod
     def setup_class(cls):
@@ -29,7 +29,7 @@ class TestLeakControl(object):
     def _invoke(self, args, cfgdb=None):
         runner = CliRunner()
         db = _make_mock_db(cfgdb)
-        return runner.invoke(liquidcool, args, obj=db)
+        return runner.invoke(liquid_cool, args, obj=db)
 
     def test_leak_control_system_enabled(self):
         mock_cfgdb = MagicMock()
@@ -80,7 +80,7 @@ class TestLeakControl(object):
 
 
 class TestLeakAction(object):
-    """Tests for 'config liquidcool leak-action' command"""
+    """Tests for 'config liquid_cool leak-action' command"""
 
     @classmethod
     def setup_class(cls):
@@ -89,7 +89,7 @@ class TestLeakAction(object):
     def _invoke(self, args, cfgdb=None):
         runner = CliRunner()
         db = _make_mock_db(cfgdb)
-        return runner.invoke(liquidcool, args, obj=db)
+        return runner.invoke(liquid_cool, args, obj=db)
 
     def test_leak_action_system_critical_power_off(self):
         mock_cfgdb = MagicMock()

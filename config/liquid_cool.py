@@ -21,13 +21,13 @@ ACTION_FIELD_MAP = {
 }
 
 
-@click.group('liquidcool')
-def liquidcool():
+@click.group('liquid-cool')
+def liquid_cool():
     """Liquid cooling configuration commands"""
     pass
 
 
-@liquidcool.command('leak-control')
+@liquid_cool.command('leak-control')
 @clicommon.pass_db
 @click.argument('policy_type', metavar='[system|rack_mgr]', type=click.Choice(VALID_POLICIES))
 @click.argument('state', metavar='[enabled|disabled]', type=click.Choice(['enabled', 'disabled']))
@@ -38,7 +38,7 @@ def leak_control(db, policy_type, state):
     click.echo(f"Leak control policy for '{policy_type}' set to '{state}'")
 
 
-@liquidcool.command('leak-action')
+@liquid_cool.command('leak-action')
 @clicommon.pass_db
 @click.argument('policy_type', metavar='[system|rack_mgr]', type=click.Choice(VALID_POLICIES))
 @click.argument('severity', metavar='[critical|minor]', type=click.Choice(VALID_SEVERITIES))
