@@ -380,8 +380,46 @@ def vrf(vrf_name):
         for vrf in vrfs:
             intfs = get_interface_bind_to_vrf(config_db, vrf)
             intfs = natsorted(intfs)
+<<<<<<< HEAD
             if len(intfs) == 0:
                 body.append([vrf, ""])
+=======
+
+            # Handle the case where we have both description lines and interfaces
+            max_rows = max(len(desc_lines), len(intfs) if intfs else 1)
+
+            for i in range(max_rows):
+                vrf_name_col = vrf if i == 0 else ""
+                desc_col = desc_lines[i] if i < len(desc_lines) else ""
+                intf_col = intfs[i] if i < len(intfs) else ""
+                body.append([vrf_name_col, desc_col, intf_col])
+        click.echo(tabulate(body, header))
+    else:
+        click.echo("All interfaces are in default VRF.")
+
+
+
+@vrf.command('summary')
+def vrf_summary():
+    config_db = ConfigDBConnector()
+    config_db.connect()
+    header = ['VRF', 'Description']
+    body = []
+    desc_width = 40
+    vrf_dict = config_db.get_table('VRF')
+
+    if vrf_dict:
+        sorted_keys = natsorted(vrf_dict.keys())
+        for vrf in sorted_keys:
+            # Get VRF description (only if VRF exists in VRF table)
+            vrf_data = vrf_dict.get(vrf, {}) if vrf_dict else {}
+            description = vrf_data.get('description', '')
+
+            # Wrap description text if it's too long
+            if description:
+                wrapped_desc = textwrap.fill(description, width=desc_width)
+                desc_lines = wrapped_desc.split('\n')
+>>>>>>> aab9dff7 (NOS-7310: Update show vrf to render VRF table only if custom VRFs are configured (#437))
             else:
                 body.append([vrf, intfs[0]])
                 for intf in intfs[1:]:
