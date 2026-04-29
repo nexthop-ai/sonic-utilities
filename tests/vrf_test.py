@@ -73,8 +73,6 @@ Vrf103  Ethernet4
         assert result.exit_code == 0
         assert result.output == expected_output
 
-<<<<<<< HEAD
-=======
     def test_vrf_show_unconfigured_vrf(self):
         """Test show VRF command failing where the user specifies the wrong VRF"""
         runner = CliRunner()
@@ -103,37 +101,6 @@ Vrf103  Ethernet4
         assert "Vrf102" not in result.output
         assert "Vrf103" not in result.output
 
-    def test_vrf_show_summary_default_only(self, default_vrf_only):
-        runner = CliRunner()
-        result = runner.invoke(show.cli.commands['vrf'], ['summary'])
-        assert result.exit_code == 0
-        assert "All interfaces are in default VRF.\n" == result.output
-
-    def test_vrf_show_summary(self):
-        from .mock_tables import dbconnector
-        jsonfile_config = os.path.join(mock_db_path, "config_db")
-        dbconnector.dedicated_dbs['CONFIG_DB'] = jsonfile_config
-        runner = CliRunner()
-        result = runner.invoke(show.cli.commands['vrf'], ['summary'])
-        assert result.exit_code == 0
-
-        # check table columns
-        assert "VRF" in result.output
-        assert "Description" in result.output
-        assert "Interfaces" not in result.output
-
-        # check description presence
-        assert "Development VRF with a long description" in result.output
-        assert "Default VRF" in result.output
-
-        # check VRF ordering
-        vrfs_in_order = ["Vrf1", "Vrf101", "Vrf102", "Vrf103", "Default"]
-        for i in range(1, len(vrfs_in_order)):
-            first_vrf_index = result.output.index(vrfs_in_order[i - 1])
-            second_vrf_index = result.output.index(vrfs_in_order[i])
-            assert first_vrf_index < second_vrf_index
-
->>>>>>> aab9dff7 (NOS-7310: Update show vrf to render VRF table only if custom VRFs are configured (#437))
     def test_vrf_bind_unbind(self):
         from .mock_tables import dbconnector
         jsonfile_config = os.path.join(mock_db_path, "config_db")
@@ -392,68 +359,6 @@ Error: 'vrf_name' length should not exceed 15 characters
         assert ('VrfNameTooLong!!!') not in db.cfgdb.get_table('VRF')
         assert expected_output in result.output
 
-<<<<<<< HEAD
-=======
-    def test_vrf_add_with_description(self):
-        """Test VRF add command with description option"""
-        runner = CliRunner()
-        db = Db()
-        vrf_obj = {'config_db': db.cfgdb, 'namespace': db.db.namespace}
-
-        # Test adding VRF with valid description
-        result = runner.invoke(config.config.commands["vrf"].commands["add"],
-                             ["Vrf_test", "--description", "Test VRF for unit testing"], obj=vrf_obj)
-        assert result.exit_code == 0
-        assert ('Vrf_test') in db.cfgdb.get_table('VRF')
-        vrf_data = db.cfgdb.get_table('VRF')['Vrf_test']
-        assert 'description' in vrf_data
-        assert vrf_data['description'] == "Test VRF for unit testing"
-
-        # Test adding VRF without description
-        result = runner.invoke(config.config.commands["vrf"].commands["add"],
-                             ["Vrf_nodesc"], obj=vrf_obj)
-        assert result.exit_code == 0
-        assert ('Vrf_nodesc') in db.cfgdb.get_table('VRF')
-        vrf_data = db.cfgdb.get_table('VRF')['Vrf_nodesc']
-        assert 'description' not in vrf_data or vrf_data.get('description') == ""
-
-        # Test adding VRF with maximum length description (255 characters)
-        max_desc = "x" * 255
-        result = runner.invoke(config.config.commands["vrf"].commands["add"],
-                             ["Vrf_maxdesc", "--description", max_desc], obj=vrf_obj)
-        assert result.exit_code == 0
-        assert ('Vrf_maxdesc') in db.cfgdb.get_table('VRF')
-        vrf_data = db.cfgdb.get_table('VRF')['Vrf_maxdesc']
-        assert 'description' in vrf_data
-        assert vrf_data['description'] == max_desc
-
-        # Clean up
-        runner.invoke(config.config.commands["vrf"].commands["del"], ["Vrf_test"], obj=vrf_obj)
-        runner.invoke(config.config.commands["vrf"].commands["del"], ["Vrf_nodesc"], obj=vrf_obj)
-        runner.invoke(config.config.commands["vrf"].commands["del"], ["Vrf_maxdesc"], obj=vrf_obj)
-
-    def test_vrf_add_description_validation(self):
-        """Test VRF description validation"""
-        runner = CliRunner()
-        db = Db()
-        vrf_obj = {'config_db': db.cfgdb, 'namespace': db.db.namespace}
-
-        # Test description too long (256 characters)
-        too_long_desc = "x" * 256
-        result = runner.invoke(config.config.commands["vrf"].commands["add"],
-                             ["Vrf_toolong", "--description", too_long_desc], obj=vrf_obj)
-        assert result.exit_code != 0
-        assert "Description length must be between 1 and 255 characters" in result.output
-        assert ('Vrf_toolong') not in db.cfgdb.get_table('VRF')
-
-        # Test empty description (should fail)
-        result = runner.invoke(config.config.commands["vrf"].commands["add"],
-                             ["Vrf_empty", "--description", ""], obj=vrf_obj)
-        assert result.exit_code != 0
-        assert "Description length must be between 1 and 255 characters" in result.output
-        assert ('Vrf_empty') not in db.cfgdb.get_table('VRF')
-
->>>>>>> aab9dff7 (NOS-7310: Update show vrf to render VRF table only if custom VRFs are configured (#437))
 
 class TestVnet(object):
     @classmethod
