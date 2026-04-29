@@ -3,6 +3,7 @@ import sys
 from click.testing import CliRunner
 from swsscommon.swsscommon import SonicV2Connector
 from utilities_common.db import Db
+import pytest
 
 import config.main as config
 import show.main as show
@@ -12,6 +13,19 @@ DEFAULT_NAMESPACE = ''
 test_path = os.path.dirname(os.path.abspath(__file__))
 mock_db_path = os.path.join(test_path, "vrf_input")
 mock_db_path_vnet = os.path.join(test_path, "vnet_input")
+
+
+@pytest.fixture
+def default_vrf_only():
+    from .mock_tables import dbconnector
+    original_dbs = dbconnector.dedicated_dbs.copy()
+    dbconnector.dedicated_dbs['CONFIG_DB'] = os.path.join(mock_db_path, "config_db_empty")
+
+    try:
+        yield
+    finally:
+        dbconnector.dedicated_dbs.clear()
+        dbconnector.dedicated_dbs.update(original_dbs)
 
 class TestShowVrf(object):
     @classmethod
@@ -47,6 +61,36 @@ Vrf103  Ethernet4
         dbconnector.dedicated_dbs = {}
         assert result.exit_code == 0
         assert result.output == expected_output
+
+    def test_vrf_show_summary_default_only(self, default_vrf_only):
+        runner = CliRunner()
+        result = runner.invoke(show.cli.commands['vrf'], ['summary'])
+        assert result.exit_code == 0
+        assert "All interfaces are in default VRF.\n" == result.output
+
+    def test_vrf_show_summary(self):
+        from .mock_tables import dbconnector
+        jsonfile_config = os.path.join(mock_db_path, "config_db")
+        dbconnector.dedicated_dbs['CONFIG_DB'] = jsonfile_config
+        runner = CliRunner()
+        result = runner.invoke(show.cli.commands['vrf'], ['summary'])
+        assert result.exit_code == 0
+
+        # check table columns
+        assert "VRF" in result.output
+        assert "Description" in result.output
+        assert "Interfaces" not in result.output
+
+        # check description presence
+        assert "Development VRF with a long description" in result.output
+        assert "Default VRF" in result.output
+
+        # check VRF ordering
+        vrfs_in_order = ["Vrf1", "Vrf101", "Vrf102", "Vrf103", "Default"]
+        for i in range(1, len(vrfs_in_order)):
+            first_vrf_index = result.output.index(vrfs_in_order[i - 1])
+            second_vrf_index = result.output.index(vrfs_in_order[i])
+            assert first_vrf_index < second_vrf_index
 
     def test_vrf_bind_unbind(self):
         from .mock_tables import dbconnector

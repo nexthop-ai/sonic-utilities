@@ -362,10 +362,21 @@ def get_interface_bind_to_vrf(config_db, vrf_name):
                     data.append(interface)
     return data
 
+<<<<<<< HEAD
 @cli.command()
 @click.argument('vrf_name', required=False)
 def vrf(vrf_name):
     """Show vrf config"""
+=======
+
+@cli.group(cls=clicommon.ShowVrfGroup, invoke_without_command=True)
+@click.pass_context
+def vrf(ctx, vrf_name):
+    """Show vrf config"""
+    if ctx.invoked_subcommand is not None:
+        return
+
+>>>>>>> a16eb10d (NOS-7311: Implement "show vrf summary" sub-command (#450))
     config_db = ConfigDBConnector()
     config_db.connect()
     header = ['VRF', 'Interfaces']
@@ -387,6 +398,41 @@ def vrf(vrf_name):
                 for intf in intfs[1:]:
                     body.append(["", intf])
     click.echo(tabulate(body, header))
+
+
+@vrf.command('summary')
+def vrf_summary():
+    config_db = ConfigDBConnector()
+    config_db.connect()
+    header = ['VRF', 'Description']
+    body = []
+    desc_width = 40
+    vrf_dict = config_db.get_table('VRF')
+
+    if vrf_dict:
+        sorted_keys = natsorted(vrf_dict.keys())
+        for vrf in sorted_keys:
+            # Get VRF description (only if VRF exists in VRF table)
+            vrf_data = vrf_dict.get(vrf, {}) if vrf_dict else {}
+            description = vrf_data.get('description', '')
+
+            # Wrap description text if it's too long
+            if description:
+                wrapped_desc = textwrap.fill(description, width=desc_width)
+                desc_lines = wrapped_desc.split('\n')
+            else:
+                desc_lines = ['']
+
+            rows = len(desc_lines)
+            for i in range(rows):
+                vrf_name_col = vrf if i == 0 else ""
+                desc_col = desc_lines[i] if i < rows else ""
+                body.append([vrf_name_col, desc_col])
+
+        body.append(["Default", "Default VRF"])
+        click.echo(tabulate(body, header))
+    else:
+        click.echo("All interfaces are in default VRF.")
 
 #
 # 'events' command ("show event-counters")
