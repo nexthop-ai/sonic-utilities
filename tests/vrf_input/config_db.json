@@ -19,8 +19,14 @@
     "PORTCHANNEL_INTERFACE|PortChannel0002": {
         "vrf_name": "Vrf102"
     },
+    "PORTCHANNEL_INTERFACE|PortChannel1234": {
+        "admin_status": "up"
+    },
     "INTERFACE|Ethernet4": {
         "vrf_name": "Vrf103"
+    },
+    "INTERFACE|Ethernet123": {
+        "admin_status": "up"
     },
     "LOOPBACK_INTERFACE|Loopback0": {
         "vrf_name": "Vrf103"

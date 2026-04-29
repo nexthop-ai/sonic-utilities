@@ -349,8 +349,11 @@ cli.add_command(bgp_cli.BGP)
 # 'vrf' command ("show vrf")
 #
 
-def get_interface_bind_to_vrf(config_db, vrf_name):
-    """Get interfaces belong to vrf
+
+def get_interface_bind_to_vrf(config_db, vrf_name="default"):
+    """
+    Get interfaces belonging to vrf.
+    If `vrf_name` isn't specified, this function will look for interfaces in the default VRF.
     """
     tables = ['INTERFACE', 'PORTCHANNEL_INTERFACE', 'VLAN_INTERFACE', 'LOOPBACK_INTERFACE', 'VLAN_SUB_INTERFACE']
     data = []
@@ -358,7 +361,11 @@ def get_interface_bind_to_vrf(config_db, vrf_name):
         interface_dict = config_db.get_table(table_name)
         if interface_dict:
             for interface in interface_dict:
-                if 'vrf_name' in interface_dict[interface] and vrf_name == interface_dict[interface]['vrf_name']:
+                # DB keys that combine both interface + IP address are returned as tuples;
+                # we're only concerned with interface
+                if vrf_name == "default" and isinstance(interface, str) and 'vrf_name' not in interface_dict[interface]:
+                    data.append(interface)
+                elif 'vrf_name' in interface_dict[interface] and vrf_name == interface_dict[interface]['vrf_name']:
                     data.append(interface)
     return data
 
@@ -378,7 +385,22 @@ def vrf(vrf_name):
         elif vrf_name in vrf_dict:
             vrfs = [vrf_name]
         for vrf in vrfs:
+<<<<<<< HEAD
             intfs = get_interface_bind_to_vrf(config_db, vrf)
+=======
+            # Get VRF description (only if VRF exists in VRF table)
+            vrf_data = vrf_dict.get(vrf, {}) if vrf_dict else {}
+            description = vrf_data.get('description', '')
+
+            # Wrap description text if it's too long
+            if description:
+                wrapped_desc = textwrap.fill(description, width=desc_width)
+                desc_lines = wrapped_desc.split('\n')
+            else:
+                desc_lines = ['']
+
+            intfs = get_interface_bind_to_vrf(config_db, vrf_name=vrf)
+>>>>>>> ad0456c0 (NOS-7312: implement "show vrf default" sub-command (#453))
             intfs = natsorted(intfs)
             if len(intfs) == 0:
                 body.append([vrf, ""])
@@ -386,6 +408,24 @@ def vrf(vrf_name):
                 body.append([vrf, intfs[0]])
                 for intf in intfs[1:]:
                     body.append(["", intf])
+    click.echo(tabulate(body, header))
+
+
+@vrf.command('default')
+def vrf_default():
+    """Show default VRF configuration"""
+    config_db = ConfigDBConnector()
+    config_db.connect()
+    header = ['VRF', 'Description', 'Interfaces']
+    body = []
+    intfs = get_interface_bind_to_vrf(config_db, vrf_name="default")
+    intfs = natsorted(intfs)
+
+    for i in range(len(intfs)):
+        vrf_name_col = "Default" if i == 0 else ""
+        desc_col = "Default VRF" if i == 0 else ""
+        intf_col = intfs[i] if i < len(intfs) else ""
+        body.append([vrf_name_col, desc_col, intf_col])
     click.echo(tabulate(body, header))
 
 #
