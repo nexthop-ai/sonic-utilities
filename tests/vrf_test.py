@@ -24,6 +24,48 @@ class TestShowVrf(object):
         time.sleep(0.5)
         db.delete(db_name, key)
 
+<<<<<<< HEAD
+=======
+    def assert_correct_multiline_desc(self, output, vrf_table, vrf, line_width=40):
+        attrs = vrf_table.get(vrf, {})
+        assert attrs
+        desc = attrs['description']
+        assert desc
+        vrf_name_index = output.find(vrf)
+
+        # check long descriptions are broken into multiple lines
+        # AND comes after its associated VRF name
+        for i in range(0, len(desc), line_width):
+            line_end = min(len(desc), i + line_width)
+            line = desc[i:line_end].strip()
+            assert output.find(line) > vrf_name_index
+
+    def test_vrf_show_correct_columns(self):
+        """Test show VRF command displays VRF name, description, and interfaces"""
+        runner = CliRunner()
+        db = Db()
+        result = runner.invoke(show.cli.commands['vrf'], [], obj=db)
+        assert result.exit_code == 0
+        assert "VRF" in result.output
+        assert "Description" in result.output
+        assert "Interfaces" in result.output
+
+    def test_vrf_show_no_custom_vrfs(self, default_vrf_only):
+        """Test show VRF command exits with a message saying all interfaces in default VRF"""
+        runner = CliRunner()
+        result = runner.invoke(show.cli.commands['vrf'])
+        assert result.exit_code == 0
+        assert "All interfaces are in default VRF.\n" == result.output
+
+    def test_vrf_show_no_custom_vrfs_filter(self, default_vrf_only):
+        """Test show VRF command fails when no custom VRFs exist and interface is specified"""
+        runner = CliRunner()
+        vrf_name = "Vrf-null"
+        result = runner.invoke(show.cli.commands['vrf'], [vrf_name])
+        assert result.exit_code != 0
+        assert f"{vrf_name} is not configured." in result.output
+
+>>>>>>> d814eb73 (NOS-7311: add missing test case for "show vrf summary" (#460))
     def test_vrf_show(self):
         from .mock_tables import dbconnector
         jsonfile_config = os.path.join(mock_db_path, "config_db")
@@ -48,6 +90,104 @@ Vrf103  Ethernet4
         assert result.exit_code == 0
         assert result.output == expected_output
 
+<<<<<<< HEAD
+=======
+    def test_vrf_show_unconfigured_vrf(self):
+        """Test show VRF command failing where the user specifies the wrong VRF"""
+        runner = CliRunner()
+        db = Db()
+
+        vrf_name = "Vrf-null"
+        result = runner.invoke(show.cli.commands['vrf'], [vrf_name], obj=db)
+
+        assert result.exit_code != 0
+        assert f"Error: VRF {vrf_name} is not configured." in result.output
+
+    def test_vrf_show_specified_interface(self):
+        """Test show VRF command returns specified interface if found"""
+        from .mock_tables import dbconnector
+        jsonfile_config = os.path.join(mock_db_path, "config_db")
+        dbconnector.dedicated_dbs['CONFIG_DB'] = jsonfile_config
+        runner = CliRunner()
+        vrf_name = "Vrf1"
+
+        result = runner.invoke(show.cli.commands['vrf'], [vrf_name])
+        print(result.output)
+        assert result.exit_code == 0
+
+        assert vrf_name in result.output
+        assert "Vrf101" not in result.output
+        assert "Vrf102" not in result.output
+        assert "Vrf103" not in result.output
+
+    def test_vrf_show_summary_default_only(self, default_vrf_only):
+        runner = CliRunner()
+        result = runner.invoke(show.cli.commands['vrf'], ['summary'])
+        assert result.exit_code == 0
+        assert "All interfaces are in default VRF.\n" == result.output
+
+    def test_vrf_show_summary(self):
+        from .mock_tables import dbconnector
+        jsonfile_config = os.path.join(mock_db_path, "config_db")
+        dbconnector.dedicated_dbs['CONFIG_DB'] = jsonfile_config
+        runner = CliRunner()
+        db = Db()
+        result = runner.invoke(show.cli.commands['vrf'], ['summary'], obj=db)
+        assert result.exit_code == 0
+
+        # check table columns
+        assert "VRF" in result.output
+        assert "Description" in result.output
+        assert "Interfaces" not in result.output
+
+        # check description presence
+        assert "Development VRF with a long description" in result.output
+        assert "Default VRF" in result.output
+
+        # check correct description formatting
+        vrf_table = db.cfgdb.get_table('VRF')
+        self.assert_correct_multiline_desc(result.output, vrf_table, "Vrf102")
+
+        # check VRF ordering
+        vrfs_in_order = ["Vrf1", "Vrf101", "Vrf102", "Vrf103", "Default"]
+        for i in range(1, len(vrfs_in_order)):
+            first_vrf_index = result.output.index(vrfs_in_order[i - 1])
+            second_vrf_index = result.output.index(vrfs_in_order[i])
+            assert first_vrf_index < second_vrf_index
+
+    def test_vrf_show_default(self):
+        from .mock_tables import dbconnector
+        jsonfile_config = os.path.join(mock_db_path, "config_db")
+        dbconnector.dedicated_dbs['CONFIG_DB'] = jsonfile_config
+        runner = CliRunner()
+        db = Db()
+        result = runner.invoke(show.cli.commands['vrf'], ['default'], obj=db)
+        assert result.exit_code == 0
+
+        # check table columns
+        assert "VRF" in result.output
+        assert "Description" in result.output
+        assert "Interfaces" in result.output
+
+        # check interface ordering
+        assert result.output.index("Ethernet123") < result.output.index("PortChannel1234")
+
+        # check non-default VRFs not in output
+        assert "Vrf1" not in result.output
+        assert "Vrf101" not in result.output
+        assert "Vrf102" not in result.output
+        assert "Vrf103" not in result.output
+
+        # check interfaces in non-default VRFs do not show up
+        table_names = ['INTERFACE', 'LOOPBACK_INTERFACE', 'VLAN_INTERFACE',
+                       'PORTCHANNEL_INTERFACE', 'VLAN_SUB_INTERFACE']
+        for table_name in table_names:
+            table = db.cfgdb.get_table(table_name)
+            for intf, attr in table.items():
+                if 'vrf_name' in attr:
+                    assert intf not in result.output
+
+>>>>>>> d814eb73 (NOS-7311: add missing test case for "show vrf summary" (#460))
     def test_vrf_bind_unbind(self):
         from .mock_tables import dbconnector
         jsonfile_config = os.path.join(mock_db_path, "config_db")
