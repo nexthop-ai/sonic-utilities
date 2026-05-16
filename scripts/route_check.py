@@ -573,11 +573,14 @@ def filter_out_local_interfaces(namespace, keys):
     :return keys filtered out of local
     """
     rt = []
-    local_if_lst = {'eth0', 'eth1', 'docker0'}  # eth1 is added to skip route installed in AAPL_DB on packet-chassis
-    local_if_lo = [r'tun0', r'lo', r'Loopback\d+']
+    # eth1 is added to skip route installed in APPL_DB on packet-chassis
+    # usb interfaces are excluded because they exist in APPL_DB but not in ASIC_DB,
+    # causing false-positive route mismatches and script hangs during reconciliation checks
+    local_if_lst = {r'^eth0$', r'^eth1$', r'^docker0$', r'^usb\d+$'}
+    local_if_lo = [r'^tun0$', r'^lo$', r'^Loopback\d+$']
 
     chassis_local_intfs = chassis.get_chassis_local_interfaces()
-    local_if_lst.update(set(chassis_local_intfs))
+    local_if_lst.update({f'^{re.escape(intf)}$' for intf in chassis_local_intfs})
 
     db = swsscommon.DBConnector(APPL_DB_NAME, REDIS_TIMEOUT_MSECS, True, namespace)
     tbl = swsscommon.Table(db, 'ROUTE_TABLE')
@@ -586,7 +589,7 @@ def filter_out_local_interfaces(namespace, keys):
         e = dict(tbl.get(k)[1])
 
         ifname = e.get('ifname', '')
-        if ifname in local_if_lst:
+        if any(re.match(x, ifname) for x in local_if_lst):
             continue
 
         if any([re.match(x, ifname) for x in local_if_lo]):
