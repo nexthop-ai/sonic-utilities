@@ -9,6 +9,7 @@ import utilities_common.cli as clicommon
 from urllib.request import urlopen, urlretrieve
 
 import click
+from .image_version import is_downgrade
 from sonic_py_common import logger
 from swsscommon.swsscommon import SonicV2Connector
 from sonic_py_common.general import getstatusoutput_noshell_pipe
@@ -511,6 +512,20 @@ def validate_positive_int(ctx, param, value):
     raise click.BadParameter("Must be a positive integer")
 
 
+def handle_downgrades(bootloader, target_version, allow_downgrade):
+    """Check if requested image is a downgrade from the current image"""
+    curr_version = bootloader.get_current_image()
+
+    if is_downgrade(curr_version, target_version):
+        if allow_downgrade:
+            echo_and_log("WARN: Image downgrade requested.\n" +
+                         "CONFIG_DB will remain and may be stale after the installation.", LOG_WARN)
+        else:
+            echo_and_log("ERROR: Image downgrade failed.\n" +
+                         "Please use --allow-downgrade to proceed.", LOG_ERR)
+            raise click.Abort()
+
+
 # Main entrypoint
 @click.group(cls=AliasedGroup)
 def sonic_installer():
@@ -549,9 +564,12 @@ def sonic_installer():
               help='If system available memory is lower than threshold, setup SWAP memory',
               cls=clicommon.MutuallyExclusiveOption, mutually_exclusive=['skip_setup_swap'],
               callback=validate_positive_int)
+@click.option('--allow-downgrade', is_flag=True,
+              help="Allow installing an image older than the currently running image.")
 @click.argument('url')
 def install(url, force, skip_platform_check=False, skip_migration=False, skip_package_migration=False,
-            skip_setup_swap=False, swap_mem_size=None, total_mem_threshold=None, available_mem_threshold=None):
+            skip_setup_swap=False, swap_mem_size=None, total_mem_threshold=None, available_mem_threshold=None,
+            allow_downgrade=False):
     """ Install image from local binary or URL"""
     bootloader = get_bootloader()
 
@@ -580,6 +598,8 @@ def install(url, force, skip_platform_check=False, skip_migration=False, skip_pa
             echo_and_log('Error: Failed to set image as default', LOG_ERR)
             raise click.Abort()
     else:
+        handle_downgrades(bootloader, binary_image_version, allow_downgrade)
+
         # Verify not installing non-secure image in a secure running image
         if not force and not bootloader.verify_secureboot_image(image_path):
             echo_and_log("Image file '{}' is of a different type than running image.\n".format(url) +
@@ -657,7 +677,9 @@ def list_command():
 # Set default image for boot
 @sonic_installer.command('set-default')
 @click.argument('image')
-def set_default(image):
+@click.option('--allow-downgrade', is_flag=True,
+              help="Allow installing an image older than the currently running image.")
+def set_default(image, allow_downgrade=False):
     """ Choose image to boot from by default """
     # Warn the user if they are calling the deprecated version of the subcommand (with an underscore instead of a hyphen)
     if "set_default" in sys.argv:
@@ -667,13 +689,17 @@ def set_default(image):
     if image not in bootloader.get_installed_images():
         echo_and_log('Error: Image does not exist', LOG_ERR)
         raise click.Abort()
+
+    handle_downgrades(bootloader, image, allow_downgrade)
     bootloader.set_default_image(image)
 
 
 # Set image for next boot
 @sonic_installer.command('set-next-boot')
 @click.argument('image')
-def set_next_boot(image):
+@click.option('--allow-downgrade', is_flag=True,
+              help="Allow installing an image older than the currently running image.")
+def set_next_boot(image, allow_downgrade=False):
     """ Choose image for next reboot (one time action) """
     # Warn the user if they are calling the deprecated version of the subcommand (with underscores instead of hyphens)
     if "set_next_boot" in sys.argv:
@@ -683,6 +709,8 @@ def set_next_boot(image):
     if image not in bootloader.get_installed_images():
         echo_and_log('Error: Image does not exist', LOG_ERR)
         sys.exit(1)
+
+    handle_downgrades(bootloader, image, allow_downgrade)
     bootloader.set_next_image(image)
 
 # Set fips for image

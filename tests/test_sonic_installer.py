@@ -1,3 +1,4 @@
+import re
 import os
 import sys
 import pytest
@@ -21,11 +22,11 @@ def test_install(run_command, run_command_or_raise, get_bootloader, swap, fs):
     """ This test covers the execution of "sonic-installer install" command. """
 
     sonic_image_filename = "sonic.bin"
-    current_image_version = "image_1"
-    new_image_version = "image_2"
+    current_image_version = "SONiC-OS-202505.image_1"
+    new_image_version = "SONiC-OS-202511.1.image_2"
     new_image_folder = f"/images/{new_image_version}"
     image_docker_folder = os.path.join(new_image_folder, "docker")
-    mounted_image_folder = f"/tmp/image-{new_image_version}-fs"
+    mounted_image_folder = f"/tmp/image-{re.sub(sonic_installer_common.IMAGE_PREFIX, '', new_image_version, 1)}-fs"
     dockerd_opts = ["--iptables=false", "--bip=1.1.1.1/24", "-H", "fd://"]
 
     # Setup mock files needed for our test scenario
@@ -46,6 +47,7 @@ def test_install(run_command, run_command_or_raise, get_bootloader, swap, fs):
     mock_bootloader.get_installed_images = Mock(return_value=[current_image_version])
     mock_bootloader.get_image_path = Mock(return_value=new_image_folder)
     mock_bootloader.verify_image_sign = Mock(return_value=True)
+    mock_bootloader.get_current_image = Mock(return_value=current_image_version)
     @contextmanager
     def rootfs_path_mock(path):
         yield mounted_image_folder
@@ -206,3 +208,147 @@ def test_install_failed(rmtree, run_command, run_command_or_raise, get_bootloade
     runner = CliRunner()
     result = runner.invoke(sonic_installer.commands["install"], [sonic_image_filename, "-y"])
     print(result.output)
+
+
+@patch("sonic_installer.main.SWAPAllocator")
+@patch("sonic_installer.main.get_bootloader")
+@patch("sonic_installer.main.run_command_or_raise")
+@patch("sonic_installer.main.run_command")
+@patch('shutil.rmtree')
+def test_install_downgrades(rmtree, run_command, run_command_or_raise, get_bootloader, swap, fs):
+    sonic_image_filename = "sonic.bin"
+    current_image_version = "SONiC-OS-202511.1.image_2"
+    new_image_version = "SONiC-OS-202505.image_1"
+    new_image_folder = f"/images/{new_image_version}"
+    image_docker_folder = os.path.join(new_image_folder, "docker")
+    mounted_image_folder = f"/tmp/image-{new_image_version}-fs"
+    dockerd_opts = ["--iptables=false", "--bip=1.1.1.1/24", "-H", "fd://"]
+
+    # Setup mock files needed for our test scenario
+    fs.create_file(sonic_image_filename)
+    fs.create_dir(image_docker_folder)
+    fs.create_dir(os.path.join(mounted_image_folder, "usr/lib/docker/docker.sh"))
+    fs.create_file("/var/run/docker.pid", contents="15")
+    fs.create_file("/proc/15/cmdline", contents="\x00".join(["dockerd"] + dockerd_opts))
+
+    # Setup bootloader mock
+    mock_bootloader = Mock()
+    mock_bootloader.get_binary_image_version = Mock(return_value=new_image_version)
+    mock_bootloader.get_installed_images = Mock(return_value=[current_image_version])
+    mock_bootloader.get_image_path = Mock(return_value=new_image_folder)
+    mock_bootloader.verify_image_sign = Mock(return_value=True)
+    mock_bootloader.get_current_image = Mock(return_value=current_image_version)
+
+    @contextmanager
+    def rootfs_path_mock(path):
+        yield mounted_image_folder
+
+    mock_bootloader.get_rootfs_path = rootfs_path_mock
+
+    get_bootloader.return_value = mock_bootloader
+
+    env_dir = os.path.join('/images/SONiC-OS-202505.image_1', "sonic-config")
+    env_file = os.path.join(env_dir, "sonic-environment")
+
+    def cleanup():
+        """
+        Some artifacts aren't cleaned up after installation goes through.
+        Image installation assumes these paths don't exist, so this function is
+        to be called before every subsequent `installation` command call.
+        """
+        if os.path.isfile(env_file):
+            os.remove(env_file)
+        if os.path.isdir(env_dir):
+            os.rmdir(env_dir)
+
+    runner = CliRunner()
+    # flag not passed: downgrade rejected
+    result = runner.invoke(sonic_installer.commands["install"], [sonic_image_filename, "-y"])
+    assert result.exit_code != 0
+    assert 'Please use --allow-downgrade to proceed' in result.output
+    cleanup()
+
+    # flag passed:     downgrade proceeds
+    result = runner.invoke(sonic_installer.commands["install"], [sonic_image_filename, "-y", "--allow-downgrade"])
+    assert result.exit_code == 0
+    assert 'CONFIG_DB will remain and may be stale after the installation.' in result.output
+    cleanup()
+
+
+def get_mock_bootloader(current_image_version, target_image_version):
+    mock_bootloader = Mock()
+    mock_bootloader.get_current_image = Mock(return_value=current_image_version)
+    mock_bootloader.get_installed_images = Mock(return_value=[current_image_version, target_image_version])
+    mock_bootloader.set_default_image = Mock(return_value=True)
+    return mock_bootloader
+
+
+@patch("sonic_installer.main.get_bootloader")
+def test_set_default(get_bootloader):
+    current_image_version = "SONiC-OS-202505.image_1"
+    target_image_version = "SONiC-OS-202511.1.image_2"
+    mock_bootloader = get_mock_bootloader(current_image_version, target_image_version)
+    get_bootloader.return_value = mock_bootloader
+
+    runner = CliRunner()
+    result = runner.invoke(sonic_installer.commands["set-default"], [target_image_version])
+    assert result.exit_code == 0
+    mock_bootloader.set_default_image.assert_called_once_with(target_image_version)
+
+
+@patch("sonic_installer.main.get_bootloader")
+def test_set_default_downgrade(get_bootloader):
+    current_image_version = "SONiC-OS-202511.1.image_2"
+    target_image_version = "SONiC-OS-202505.image_1"
+    mock_bootloader = get_mock_bootloader(current_image_version, target_image_version)
+    get_bootloader.return_value = mock_bootloader
+
+    runner = CliRunner()
+
+    # flag not passed - downgrade rejected
+    result = runner.invoke(sonic_installer.commands["set-default"], [target_image_version])
+    assert result.exit_code != 0
+    assert "Please use --allow-downgrade to proceed" in result.output
+    mock_bootloader.set_default_image.assert_not_called()
+
+    # flag passed - downgrade proceeds
+    result = runner.invoke(sonic_installer.commands["set-default"], [target_image_version, "--allow-downgrade"])
+    assert result.exit_code == 0
+    assert "CONFIG_DB will remain and may be stale after the installation" in result.output
+    mock_bootloader.set_default_image.assert_called_once_with(target_image_version)
+
+
+@patch("sonic_installer.main.get_bootloader")
+def test_set_next_boot(get_bootloader):
+    current_image_version = "SONiC-OS-202505.image_1"
+    target_image_version = "SONiC-OS-202511.1.image_2"
+    mock_bootloader = get_mock_bootloader(current_image_version, target_image_version)
+    get_bootloader.return_value = mock_bootloader
+
+    runner = CliRunner()
+    result = runner.invoke(sonic_installer.commands["set-next-boot"], [target_image_version])
+
+    assert result.exit_code == 0
+    mock_bootloader.set_next_image.assert_called_once_with(target_image_version)
+
+
+@patch("sonic_installer.main.get_bootloader")
+def test_set_next_boot_downgrade(get_bootloader, fs):
+    current_image_version = "SONiC-OS-202511.1.image_2"
+    target_image_version = "SONiC-OS-202505.image_1"
+    mock_bootloader = get_mock_bootloader(current_image_version, target_image_version)
+    get_bootloader.return_value = mock_bootloader
+
+    runner = CliRunner()
+
+    # flag not passed - downgrade rejected
+    result = runner.invoke(sonic_installer.commands["set-next-boot"], [target_image_version])
+    assert result.exit_code != 0
+    assert "Please use --allow-downgrade to proceed" in result.output
+    mock_bootloader.set_next_image.assert_not_called()
+
+    # flag passed - downgrade proceeds
+    result = runner.invoke(sonic_installer.commands["set-next-boot"], [target_image_version, "--allow-downgrade"])
+    assert result.exit_code == 0
+    assert "CONFIG_DB will remain and may be stale after the installation" in result.output
+    mock_bootloader.set_next_image.assert_called_once_with(target_image_version)
