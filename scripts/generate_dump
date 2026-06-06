@@ -1892,6 +1892,10 @@ collect_broadcom() {
        save_bcmcmd_all_ns "\"conf show\"" "conf.show.summary"
        save_bcmcmd_all_ns "\"show counters\"" "show.counters.summary"
        save_bcmcmd_all_ns "\"diag counter g\"" "diag.counter.summary"
+       # Dump interrupts twice: the second run only reports interrupts that
+       # newly fired between the two reads, so both snapshots are kept.
+       save_bcmcmd_all_ns "\"show interrupt\"" "show.interrupt.summary"
+       save_bcmcmd_all_ns "\"show interrupt\"" "show.interrupt.2.summary"
        save_bcmcmd_all_ns "\"fabric connectivity\"" "fabric.connect.summary"
        save_bcmcmd_all_ns "\"port status\"" "port.status.summary"
     else
