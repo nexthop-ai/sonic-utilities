@@ -108,7 +108,9 @@
                 "rdma_config_update_validator": {
                     "Dynamic threshold tuning": {
                         "fields": [
-                            "dynamic_th"
+                            "dynamic_th",
+                            "size",
+                            "pool"
                         ],
                         "operations": [
                             "replace"
