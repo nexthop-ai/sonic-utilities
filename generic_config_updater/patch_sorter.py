@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 import jsonpatch
 import sonic_yang
 from collections import deque, OrderedDict
@@ -7,6 +8,9 @@ from enum import Enum
 from typing import Any, IO, List, Optional, Tuple
 from .gu_common import OperationWrapper, OperationType, GenericConfigUpdaterError, \
                        JsonChange, PathAddressing, genericUpdaterLogging
+
+GCU_FIELD_OP_CONF_FILE = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                                      "gcu_field_operation_validators.conf.json")
 
 class Diff:
     """
@@ -597,7 +601,40 @@ class RequiredValueIdentifier:
     The "required" config is the config that needs to be of specific value.
     E.g. Changes to "QUEUE" table requires the corresponding "PORT" to be admin down.
     """
-    def __init__(self, path_addressing):
+    # Distinct port_binding_replacement config warnings already emitted this process; used to
+    # avoid logging the same warning once per RequiredValueIdentifier construction.
+    _emitted_config_warnings = set()
+
+    # Port-binding tables that, by default, require the corresponding port to be admin down
+    # before any of their entries can be changed. For each table:
+    #   "key_pattern": the JsonPointerFilter pattern matching a binding entry, where '@' is the
+    #                  port (common key); see JsonPointerFilter for the token syntax.
+    #   "fields":      the binding fields under each entry (keep in sync with the table's YANG).
+    # An ASIC can exempt any subset of a table's fields via gcu_field_operation_validators.conf.json
+    # (see _get_no_admin_down_fields); exempted fields are rebound in place without bouncing the
+    # port. To support a new table tomorrow, add it here and reference it from the conf file.
+    PORT_BINDING_TABLES = [
+        {"key_pattern": ["BUFFER_PG", "@|*"], "fields": ["profile"]},
+        {"key_pattern": ["BUFFER_PORT_EGRESS_PROFILE_LIST", "@"], "fields": ["profile_list"]},
+        {"key_pattern": ["BUFFER_PORT_INGRESS_PROFILE_LIST", "@"], "fields": ["profile_list"]},
+        {"key_pattern": ["BUFFER_QUEUE", "@|*"], "fields": ["profile"]},
+        {"key_pattern": ["PORT_QOS_MAP", "@"], "fields": [
+            "dscp_to_tc_map",
+            "dot1p_to_tc_map",
+            "tc_to_queue_map",
+            "tc_to_pg_map",
+            "pfc_enable",
+            "pfcwd_sw_enable",
+            "pfc_to_queue_map",
+            "pfc_to_pg_map",
+            "tc_to_dscp_map",
+            "tc_to_dot1p_map",
+            "scheduler",
+        ]},
+        {"key_pattern": ["QUEUE", "@|*"], "fields": ["scheduler", "wred_profile"]},
+    ]
+
+    def __init__(self, path_addressing, asic=None):
         # TODO: port-critical fields are hard-coded for now, it should be moved to YANG models
         # settings format, each setting consist of:
         #   [
@@ -608,19 +645,15 @@ class RequiredValueIdentifier:
         #       "requiring_patterns": the patterns matching paths that requires the given value, each pattern can have '@'
         #                             which will be replaced with the common key, '*' will match any symbol
         #   }
+        if asic is None:
+            asic = self._get_asic()
+        self.logger = genericUpdaterLogging.get_logger(title="Patch Sorter")
         self.settings = [
             {
                 "required_pattern": ["PORT", "@", "admin_status"],
                 "required_value": "down",
                 "default_value": "down",
-                "requiring_patterns": [
-                        ["BUFFER_PG", "@|*"],
-                        ["BUFFER_PORT_EGRESS_PROFILE_LIST", "@"],
-                        ["BUFFER_PORT_INGRESS_PROFILE_LIST", "@"],
-                        ["BUFFER_QUEUE", "@|*"],
-                        ["PORT_QOS_MAP", "@"],
-                        ["QUEUE", "@|*"],
-                    ]
+                "requiring_patterns": self._build_requiring_patterns(asic),
             },
         ]
         self.path_addressing = path_addressing
@@ -635,6 +668,86 @@ class RequiredValueIdentifier:
                 if token == "@":
                     setting["common_key_index"] = index
             setting["requiring_filter"] = JsonPointerFilter(setting["requiring_patterns"], path_addressing)
+
+    @staticmethod
+    def _get_asic():
+        # Best-effort lookup of the device ASIC shorthand (e.g. "th5", "spc4", "td3", "cisco-8000").
+        # Reuses get_asic_name() from field_operation_validators, which derives the ASIC from
+        # asic_type + HWSKU using the helper_data.rdma_config_update_validator.*_asics maps in the
+        # same conf file. Returns "unknown" on any failure, which selects the conservative behavior.
+        try:
+            from .field_operation_validators import get_asic_name
+            return get_asic_name()
+        except Exception:
+            return "unknown"
+
+    def _get_no_admin_down_fields(self, asic):
+        # Returns a {table: [fields...]} mapping of the binding fields that, for the given ASIC,
+        # can be changed WITHOUT bouncing the port (admin down/up). Sourced from
+        # gcu_field_operation_validators.conf.json under
+        #   helper_data.port_binding_replacement.no_admin_down_fields
+        # which maps each ASIC shorthand to a {table: [fields...]} dict. A "default" key (if
+        # present) applies to every ASIC not listed explicitly. Returns {} (conservative) when
+        # nothing matches or the file/section is missing. ASIC matching is case-insensitive.
+        if not asic or asic == "unknown":
+            return {}
+        try:
+            with open(GCU_FIELD_OP_CONF_FILE) as f:
+                conf = json.load(f)
+            mapping = conf.get("helper_data", {}) \
+                          .get("port_binding_replacement", {}) \
+                          .get("no_admin_down_fields", {})
+        except Exception:
+            return {}
+        for key, table_fields in mapping.items():
+            if key.lower() == asic.lower():
+                return table_fields
+        return mapping.get("default", {})
+
+    def _build_requiring_patterns(self, asic):
+        # Build the requiring patterns for every port-binding table. For a table with no exempt
+        # fields on this ASIC, match the whole entry (conservative: any change bounces the port).
+        # For a table with exempt fields, match only the non-exempt fields at field granularity, so
+        # changing only the exempt fields does NOT require the port to be admin down.
+        exemptions = self._get_no_admin_down_fields(asic)
+        # case-insensitive lookup of per-table exempt fields
+        exemptions = {table.lower(): set(f.lower() for f in fields)
+                      for table, fields in exemptions.items()}
+        # Warn about any configured table that is not a known port-binding table; it is ignored.
+        known_tables = {table["key_pattern"][0].lower() for table in self.PORT_BINDING_TABLES}
+        for table_name in sorted(set(exemptions) - known_tables):
+            self._log_config_warning(
+                f"port_binding_replacement: ignoring unknown table '{table_name}' for asic "
+                f"'{asic}'. Known tables: {sorted(known_tables)}")
+        patterns = []
+        for table in self.PORT_BINDING_TABLES:
+            table_name = table["key_pattern"][0]
+            known_fields = set(f.lower() for f in table["fields"])
+            requested = exemptions.get(table_name.lower(), set())
+            # Drop unknown field names so a typo cannot silently switch the table from
+            # conservative whole-entry matching to field-level matching. Warn so it is visible.
+            unknown_fields = requested - known_fields
+            if unknown_fields:
+                self._log_config_warning(
+                    f"port_binding_replacement: ignoring unknown field(s) {sorted(unknown_fields)} "
+                    f"for table '{table_name}' on asic '{asic}'. Valid fields: {sorted(known_fields)}")
+            exempt = requested & known_fields
+            if not exempt:
+                patterns.append(table["key_pattern"])
+            else:
+                patterns += [table["key_pattern"] + [field]
+                             for field in table["fields"]
+                             if field.lower() not in exempt]
+        return patterns
+
+    def _log_config_warning(self, message):
+        # RequiredValueIdentifier is constructed several times per 'config apply-patch'
+        # (validator, extender, strict and non-strict sorters), so emit each distinct
+        # configuration warning only once per process to avoid duplicate console/syslog lines.
+        if message in RequiredValueIdentifier._emitted_config_warnings:
+            return
+        RequiredValueIdentifier._emitted_config_warnings.add(message)
+        self.logger.log_warning(message, also_print_to_console=True)
 
     """
     Simple function to determine if the path tokens match any of the required patterns.

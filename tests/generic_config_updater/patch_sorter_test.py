@@ -3,6 +3,7 @@ import io
 import jsonpatch
 import sys
 import unittest
+from unittest import mock
 from unittest.mock import MagicMock, Mock
 import generic_config_updater.patch_sorter as ps
 from .gutest_helpers import Files, create_side_effect_dict, create_side_effect_jsonmovegroup_dict, \
@@ -798,9 +799,8 @@ class TestJsonPointerFilter(unittest.TestCase):
         self.assertCountEqual(expected_paths, actual_paths)
 
 class TestRequiredValueIdentifier(unittest.TestCase):
-    def test_hard_coded_required_value_data(self):
-        identifier = ps.RequiredValueIdentifier(PathAddressing())
-        config = {
+    def _sample_config(self):
+        return {
             "BUFFER_PG": {
                 "Ethernet4|0": {
                     "profile": "ingress_lossy_profile"
@@ -861,6 +861,113 @@ class TestRequiredValueIdentifier(unittest.TestCase):
                 "Ethernet4": {}
             }
         }
+
+    def test_hard_coded_required_value_data(self):
+        # Default/unlisted ASIC -> conservative: the whole PORT_QOS_MAP entry (including
+        # dscp_to_tc_map) requires the port to be admin down.
+        identifier = ps.RequiredValueIdentifier(PathAddressing(), asic="some-unlisted-asic")
+        config = self._sample_config()
+        expected = OrderedDict([
+            ('/BUFFER_PG/Ethernet4|0', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/BUFFER_PORT_EGRESS_PROFILE_LIST/Ethernet4', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/BUFFER_PORT_INGRESS_PROFILE_LIST/Ethernet4', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/BUFFER_QUEUE/Ethernet4|1', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/PORT_QOS_MAP/Ethernet4', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/QUEUE/Ethernet4|2', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/QUEUE/Ethernet4|7-8', [('/PORT/Ethernet4/admin_status', 'down')]),
+        ])
+
+        actual = identifier.get_required_value_data([config])
+
+        self.assertEqual(expected, actual)
+
+    @mock.patch.object(ps.RequiredValueIdentifier, "_get_no_admin_down_fields",
+                       return_value={"PORT_QOS_MAP": ["dscp_to_tc_map", "tc_to_queue_map"]})
+    def test_required_value_data__qos_map_fields_no_admin_down(self, mock_exempt_fields):
+        # On an ASIC that exempts dscp_to_tc_map and tc_to_queue_map, PORT_QOS_MAP is matched at
+        # field granularity and those two fields are excluded, so changing only them does NOT
+        # bounce the port. Every other PORT_QOS_MAP field (and every other table) still requires
+        # the port admin down.
+        identifier = ps.RequiredValueIdentifier(PathAddressing(), asic="qos-rebind-asic")
+        config = self._sample_config()
+        expected = OrderedDict([
+            ('/BUFFER_PG/Ethernet4|0', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/BUFFER_PORT_EGRESS_PROFILE_LIST/Ethernet4', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/BUFFER_PORT_INGRESS_PROFILE_LIST/Ethernet4', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/BUFFER_QUEUE/Ethernet4|1', [('/PORT/Ethernet4/admin_status', 'down')]),
+            # dscp_to_tc_map and tc_to_queue_map are exempted: they must NOT require admin down.
+            ('/PORT_QOS_MAP/Ethernet4/pfc_enable', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/PORT_QOS_MAP/Ethernet4/pfc_to_queue_map', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/PORT_QOS_MAP/Ethernet4/tc_to_pg_map', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/QUEUE/Ethernet4|2', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/QUEUE/Ethernet4|7-8', [('/PORT/Ethernet4/admin_status', 'down')]),
+        ])
+
+        actual = identifier.get_required_value_data([config])
+
+        self.assertEqual(expected, actual)
+
+    @mock.patch.object(ps.RequiredValueIdentifier, "_get_no_admin_down_fields",
+                       return_value={
+                           "PORT_QOS_MAP": ["dscp_to_tc_map"],
+                           "BUFFER_PG": ["profile"],
+                           "QUEUE": ["scheduler", "wred_profile"],
+                       })
+    def test_required_value_data__multiple_tables_no_admin_down(self, mock_exempt_fields):
+        # The exemption mechanism is generic across all port-binding tables, not just
+        # PORT_QOS_MAP. Here:
+        #   - PORT_QOS_MAP exempts only dscp_to_tc_map -> other map fields still require admin down
+        #   - BUFFER_PG exempts its only field "profile" -> BUFFER_PG drops out entirely
+        #   - QUEUE exempts both its fields -> QUEUE drops out entirely
+        # Tables not mentioned (BUFFER_QUEUE, BUFFER_PORT_*_PROFILE_LIST) keep the conservative
+        # whole-entry behavior.
+        identifier = ps.RequiredValueIdentifier(PathAddressing(), asic="multi-rebind-asic")
+        config = self._sample_config()
+        expected = OrderedDict([
+            ('/BUFFER_PORT_EGRESS_PROFILE_LIST/Ethernet4', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/BUFFER_PORT_INGRESS_PROFILE_LIST/Ethernet4', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/BUFFER_QUEUE/Ethernet4|1', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/PORT_QOS_MAP/Ethernet4/pfc_enable', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/PORT_QOS_MAP/Ethernet4/pfc_to_queue_map', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/PORT_QOS_MAP/Ethernet4/tc_to_pg_map', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/PORT_QOS_MAP/Ethernet4/tc_to_queue_map', [('/PORT/Ethernet4/admin_status', 'down')]),
+        ])
+
+        actual = identifier.get_required_value_data([config])
+
+        self.assertEqual(expected, actual)
+
+    @mock.patch.object(ps.RequiredValueIdentifier, "_get_no_admin_down_fields",
+                       return_value={"PORT_QOS_MAP": ["dscp_to_tc_map", "bogus_field"]})
+    def test_required_value_data__unknown_field_mixed_is_ignored(self, mock_exempt_fields):
+        # An unknown field listed alongside valid ones is silently dropped: the result is
+        # identical to listing only the valid field (dscp_to_tc_map exempted, all others bounce).
+        identifier = ps.RequiredValueIdentifier(PathAddressing(), asic="typo-asic")
+        config = self._sample_config()
+        expected = OrderedDict([
+            ('/BUFFER_PG/Ethernet4|0', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/BUFFER_PORT_EGRESS_PROFILE_LIST/Ethernet4', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/BUFFER_PORT_INGRESS_PROFILE_LIST/Ethernet4', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/BUFFER_QUEUE/Ethernet4|1', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/PORT_QOS_MAP/Ethernet4/pfc_enable', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/PORT_QOS_MAP/Ethernet4/pfc_to_queue_map', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/PORT_QOS_MAP/Ethernet4/tc_to_pg_map', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/PORT_QOS_MAP/Ethernet4/tc_to_queue_map', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/QUEUE/Ethernet4|2', [('/PORT/Ethernet4/admin_status', 'down')]),
+            ('/QUEUE/Ethernet4|7-8', [('/PORT/Ethernet4/admin_status', 'down')]),
+        ])
+
+        actual = identifier.get_required_value_data([config])
+
+        self.assertEqual(expected, actual)
+
+    @mock.patch.object(ps.RequiredValueIdentifier, "_get_no_admin_down_fields",
+                       return_value={"PORT_QOS_MAP": ["bogus_field"]})
+    def test_required_value_data__only_unknown_field_falls_back_conservative(self, mock_exempt_fields):
+        # A table whose exempt list contains ONLY unknown fields must fall back to the conservative
+        # whole-entry pattern (not switch to field-level matching) so a typo cannot weaken coverage.
+        identifier = ps.RequiredValueIdentifier(PathAddressing(), asic="typo-only-asic")
+        config = self._sample_config()
         expected = OrderedDict([
             ('/BUFFER_PG/Ethernet4|0', [('/PORT/Ethernet4/admin_status', 'down')]),
             ('/BUFFER_PORT_EGRESS_PROFILE_LIST/Ethernet4', [('/PORT/Ethernet4/admin_status', 'down')]),
