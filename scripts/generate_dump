@@ -2813,6 +2813,7 @@ main() {
     done
     wait
 
+<<<<<<< HEAD
     if ! $IS_SWITCH_BMC; then
         # Spanning-tree - no STP daemon / stpctl on a Switch-BMC.
         save_cmd "stpctl all" "stp.log"
@@ -2821,6 +2822,21 @@ main() {
         save_cmd "show spanning-tree bpdu_guard" "stp.bg"
         save_cmd "show spanning-tree root_guard" "stp.rg"
     fi
+=======
+    save_cmd "show dhcp_relay ipv4 helper" "dhcp_relay.ipv4" &
+    save_cmd "show dhcp_relay ipv4 counters" "dhcp_relay.ipv4.counters" &
+    save_cmd "show dhcp_relay ipv6 destination" "dhcp_relay.ipv6" &
+    save_cmd "show dhcp_relay ipv6 counters" "dhcp_relay.ipv6.counters" &
+    wait
+
+ 	save_cmd "stpctl all" "stp.log"
+    save_cmd "show spanning-tree" "stp.show"
+    save_cmd "show spanning-tree statistics" "stp.stats"
+    save_cmd "show spanning-tree bpdu_guard" "stp.bg"
+    save_cmd "show spanning-tree root_guard" "stp.rg"
+
+    save_cmd "show monitor-link" "monitor_link.show"
+>>>>>>> ad986608 (NOS-5543: Include 'show dhcp_relay ipv4/ipv6 counters' in techsupport bundle (#687))
 
     save_cmd "ps aux" "ps.aux" &
     save_cmd "top -b -n 1" "top" &
