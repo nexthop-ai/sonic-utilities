@@ -9,6 +9,7 @@ import yang as ly
 import copy
 import re
 import os
+import hashlib
 from sonic_py_common import logger, multi_asic
 from enum import Enum
 
@@ -80,6 +81,8 @@ class ConfigWrapper:
         self.scope = scope
         self.yang_dir = YANG_DIR
         self.sonic_yang_with_loaded_models = None
+        self._validate_config_cache = {}
+        self._currently_loaded_hash = None
 
     def get_config_db_as_json(self):
         return get_config_db_as_json(self.scope)
@@ -129,6 +132,13 @@ class ConfigWrapper:
 
         sy = self.create_sonic_yang_with_loaded_models()
 
+        # This loads a converted config into the shared singleton tree but does
+        # not track a cache key for it, so invalidate _currently_loaded_hash to
+        # keep the "hash describes the loaded tree" invariant true for the next
+        # find_ref_paths caller. Set before loadData so the hash is cleared even
+        # if parse mutates the tree and then throws.
+        self._currently_loaded_hash = None
+
         try:
             sy.loadData(config_db_as_json)
 
@@ -138,6 +148,20 @@ class ConfigWrapper:
             return False, ex
 
     def validate_config_db_config(self, config_db_as_json):
+        # Cache validation results by config content hash.
+        # validate_config_db_config is a pure function: same config always produces
+        # the same result. Caching avoids redundant loadData() calls when the DFS
+        # revisits the same config state during backtracking.
+        # usedforsecurity=False: this is a content cache key, not a security
+        # digest, so mark it as such -- otherwise FIPS-mode Python builds raise
+        # ValueError from hashlib.md5() instead of computing it.
+        _cache_key = hashlib.md5(
+            json.dumps(config_db_as_json, sort_keys=True).encode(),
+            usedforsecurity=False,
+        ).hexdigest()
+        if _cache_key in self._validate_config_cache:
+            return self._validate_config_cache[_cache_key]
+
         sy = self.create_sonic_yang_with_loaded_models()
 
         # TODO: Move these validators to YANG models
@@ -147,24 +171,39 @@ class ConfigWrapper:
         try:
             tmp_config_db_as_json = copy.deepcopy(config_db_as_json)
 
-            # Loading data automatically does full validation.
+            # Loading data automatically does full validation: loadData() parses
+            # with LYD_OPT_CONFIG (no LYD_OPT_TRUSTED), so libyang validates the
+            # whole tree during parse -- types, leafrefs, must/when, mandatory --
+            # and an invalid config raises SonicYangException right here. A
+            # separate validate_data_tree() pass would only re-run that identical
+            # validation on the unchanged tree, so it is redundant and omitted
+            # (a significant cost on large configs).
             # quiet=True suppresses sonic_yang.loadData's LOG_ERR
             # "Data Loading Failed" line on every exception (log-and-throw
             # antipattern). Real failures still surface via the returned
             # tuple / SonicYangException, so callers retain full error
             # signal -- only the duplicate syslog spam is silenced.
             sy.loadData(tmp_config_db_as_json, quiet=True)
-
-            sy.validate_data_tree()
-
+            self._currently_loaded_hash = _cache_key
             for supplemental_yang_validator in supplemental_yang_validators:
                 success, error = supplemental_yang_validator(config_db_as_json)
                 if not success:
-                    return success, error
+                    result = (success, error)
+                    self._validate_config_cache[_cache_key] = result
+                    return result
         except sonic_yang.SonicYangException as ex:
+<<<<<<< HEAD
             return False, ex
+=======
+            self._currently_loaded_hash = None
+            result = (False, str(ex))
+            self._validate_config_cache[_cache_key] = result
+            return result
+>>>>>>> 1fa52618 (NOS-11355: GCU: cut redundant YANG validation on 202511 (drop double-validate + backport #4476 caching) (#708))
 
-        return True, None
+        result = (True, None)
+        self._validate_config_cache[_cache_key] = result
+        return result
 
     def validate_field_operation(self, old_config, target_config):
         """
@@ -623,7 +662,35 @@ class PathAddressing:
     def _find_leafref_paths(self, path, config):
         sy = self._create_sonic_yang_with_loaded_models()
 
+<<<<<<< HEAD
         tmp_config = copy.deepcopy(config)
+=======
+        if reload_config:
+            # usedforsecurity=False: content cache key, not a security digest
+            # (keeps FIPS-mode Python builds from raising on hashlib.md5()).
+            _config_hash = hashlib.md5(
+                json.dumps(config, sort_keys=True).encode(),
+                usedforsecurity=False,
+            ).hexdigest()
+            already_loaded = (
+                self.config_wrapper is not None and
+                self.config_wrapper._currently_loaded_hash == _config_hash
+            )
+            if not already_loaded:
+                # Mirror validate_config_db_config's failure handling: a raising
+                # loadData leaves the shared tree in an unknown state, so clear
+                # the cached hash before the exception propagates -- otherwise a
+                # later caller could match the stale previous hash and skip a
+                # reload it actually needs.
+                try:
+                    sy.loadData(config)
+                except Exception:
+                    if self.config_wrapper is not None:
+                        self.config_wrapper._currently_loaded_hash = None
+                    raise
+                if self.config_wrapper is not None:
+                    self.config_wrapper._currently_loaded_hash = _config_hash
+>>>>>>> 1fa52618 (NOS-11355: GCU: cut redundant YANG validation on 202511 (drop double-validate + backport #4476 caching) (#708))
 
         sy.loadData(tmp_config)
 
