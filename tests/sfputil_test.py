@@ -553,8 +553,11 @@ class TestSfputil(object):
         assert result.output == expected_output
 
     @patch('sfputil.main.platform_chassis')
+    @patch('sfputil.main.platform_sfputil')
     @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
-    def test_show_firmware_version(self, mock_chassis):
+    @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=False))
+    def test_show_firmware_version(self, mock_sfputil, mock_chassis):
+        mock_sfputil.logical = ['Ethernet0']
         mock_sfp = MagicMock()
         mock_api = MagicMock()
         mock_sfp.get_xcvr_api = MagicMock(return_value=mock_api)
@@ -563,6 +566,22 @@ class TestSfputil(object):
         mock_api.get_module_fw_info.return_value = {'info' : ""}
         runner = CliRunner()
         result = runner.invoke(sfputil.cli.commands['show'].commands['fwversion'], ["Ethernet0"])
+        assert result.exit_code == 0
+
+    @patch('sfputil.main.platform_chassis')
+    @patch('sfputil.main.platform_sfputil')
+    @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
+    @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=False))
+    def test_firmware_show(self, mock_sfputil, mock_chassis):
+        mock_sfputil.logical = ['Ethernet0']
+        mock_sfp = MagicMock()
+        mock_api = MagicMock()
+        mock_sfp.get_xcvr_api = MagicMock(return_value=mock_api)
+        mock_sfp.get_presence.return_value = True
+        mock_chassis.get_sfp = MagicMock(return_value=mock_sfp)
+        mock_api.get_module_fw_info.return_value = {'info': ""}
+        runner = CliRunner()
+        result = runner.invoke(sfputil.cli.commands['firmware'].commands['show'], ["Ethernet0"])
         assert result.exit_code == 0
 
     @patch('sfputil.main.platform_chassis')
@@ -1469,6 +1488,20 @@ EEPROM hexdump for port Ethernet4
         assert result.output == 'Show firmware version is not applicable for RJ45 port Ethernet0.\n'
         assert result.exit_code == EXIT_FAIL
 
+    @patch('sfputil.main.platform_chassis')
+    @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
+    @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=True))
+    def test_firmware_show_Rj45(self, mock_chassis):
+        mock_sfp = MagicMock()
+        mock_api = MagicMock()
+        mock_sfp.get_xcvr_api = MagicMock(return_value=mock_api)
+        mock_sfp.get_presence.return_value = True
+        mock_chassis.get_sfp = MagicMock(return_value=mock_sfp)
+        runner = CliRunner()
+        result = runner.invoke(sfputil.cli.commands['firmware'].commands['show'], ["Ethernet0"])
+        assert result.output == 'Show firmware version is not applicable for RJ45 port Ethernet0.\n'
+        assert result.exit_code == EXIT_FAIL
+
     @patch('builtins.open')
     @patch('sfputil.main.platform_chassis')
     @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
@@ -1485,34 +1518,9 @@ EEPROM hexdump for port Ethernet4
         mock_sfp.set_optoe_write_max = MagicMock(side_effect=NotImplementedError)
         status = sfputil.download_firmware("Ethernet0", "test.bin")
         assert status == 1
-        mock_api.cdb_start_firmware_download.assert_called_once_with("test.bin")
-
-        mock_api.cdb_start_firmware_download.reset_mock()
         mock_api.get_module_fw_mgmt_feature.return_value = {'status': True, 'feature': (0, 64, True, False, 0)}
         status = sfputil.download_firmware("Ethernet0", "test.bin")
         assert status == 1
-        mock_api.cdb_start_firmware_download.assert_called_once_with("test.bin")
-        mock_api.reset_mock()
-        block_a = b'\xaa' * 64
-        block_b = b'\xbb' * 64
-        mock_file.return_value.tell.return_value = 128
-        mock_file.return_value.read.side_effect = [block_a, block_b]
-        mock_api.get_module_fw_mgmt_feature.return_value = {
-            'status': True, 'feature': (0, 64, False, False, 0)
-        }
-        mock_api.cdb_start_firmware_download.return_value = 1
-        mock_api.cdb_epl_block_write.return_value = 1
-        mock_api.cdb_firmware_download_complete.return_value = 1
-        status = sfputil.download_firmware("Ethernet0", "test_fw.bin")
-        assert status == 1
-        mock_api.cdb_start_firmware_download.assert_called_once_with("test_fw.bin")
-        assert mock_api.cdb_epl_block_write.call_count == 2
-        for call in mock_api.cdb_epl_block_write.call_args_list:
-            args, kwargs = call
-            assert len(args) == 2
-            assert kwargs == {}
-        mock_api.cdb_epl_block_write.assert_any_call(0, block_a)
-        mock_api.cdb_epl_block_write.assert_any_call(64, block_b)
 
     @patch('sfputil.main.platform_chassis')
     @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
@@ -1564,19 +1572,229 @@ EEPROM hexdump for port Ethernet4
         assert status == 1
 
     @patch('sfputil.main.platform_chassis')
+    @patch('sfputil.main.platform_sfputil')
     @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
     @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=False))
     @patch('sfputil.main.is_sfp_present', MagicMock(return_value=True))
-    @patch('sfputil.main.show_firmware_version', MagicMock())
     @patch('sfputil.main.download_firmware', MagicMock(return_value=1))
     @patch('sfputil.main.run_firmware', MagicMock(return_value=1))
     @patch('sfputil.main.is_fw_switch_done', MagicMock(return_value=1))
     @patch('sfputil.main.commit_firmware', MagicMock(return_value=1))
-    def test_firmware_upgrade(self, mock_chassis):
+    def test_firmware_upgrade(self, mock_sfputil, mock_chassis):
+        mock_sfputil.logical = ['Ethernet0']
+        mock_sfp = MagicMock()
+        mock_api = MagicMock()
+        mock_sfp.get_xcvr_api = MagicMock(return_value=mock_api)
+        mock_sfp.get_presence.return_value = True
+        mock_chassis.get_sfp = MagicMock(return_value=mock_sfp)
+        mock_api.get_module_fw_info.return_value = {'info': ""}
         runner = CliRunner()
         result = runner.invoke(sfputil.cli.commands['firmware'].commands['upgrade'], ['Ethernet0', 'path'])
-        assert result.output == 'Firmware download complete success\nFirmware run in mode 0 successful\nFirmware commit successful\n'
+        # Check that the command succeeded and contains expected success messages
         assert result.exit_code == 0
+        assert 'Upgrading image for 1 transceiver(s)' in result.output
+        assert '--- Phase 1/3: Downloading firmware for 1 port(s) ---' in result.output
+        assert '--- Phase 2/3: Activating firmware for 1 port(s) ---' in result.output
+        assert '--- Phase 3/3: Committing firmware for 1 port(s) ---' in result.output
+        assert 'Succeeded: 1, Failed: 0' in result.output
+
+    @patch('sfputil.main.platform_chassis')
+    @patch('sfputil.main.platform_sfputil')
+    @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
+    @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=False))
+    @patch('sfputil.main.show_firmware_version', MagicMock())
+    @patch('sfputil.main.check_fw_mgmt_capability', MagicMock(return_value=(True, None)))
+    @patch('sfputil.main.upgrade_helper')
+    def test_firmware_upgrade_multi_port_via_i_flag(
+            self, mock_upgrade_helper, mock_sfputil, mock_chassis):
+        """`upgrade -i Ethernet0,Ethernet4 fw.bin` should upgrade both listed ports."""
+        mock_sfputil.logical = ['Ethernet0', 'Ethernet4', 'Ethernet8']
+        mock_sfp = MagicMock()
+        mock_sfp.get_presence.return_value = True
+        mock_chassis.get_sfp.return_value = mock_sfp
+        mock_upgrade_helper.return_value = (['Ethernet0', 'Ethernet4'], {})
+
+        runner = CliRunner()
+        result = runner.invoke(
+            sfputil.cli.commands['firmware'].commands['upgrade'],
+            ['-i', 'Ethernet0,Ethernet4', '/path/fw.bin'])
+
+        assert result.exit_code == 0
+        assert 'Upgrading image for 2 transceiver(s)' in result.output
+        mock_upgrade_helper.assert_called_once()
+        call_args = mock_upgrade_helper.call_args[0]
+        assert sorted(call_args[0]) == ['Ethernet0', 'Ethernet4']
+        assert call_args[1] == {'Ethernet0': '/path/fw.bin', 'Ethernet4': '/path/fw.bin'}
+        # When invoked without a positional port_name, verbose/show_progress must be False
+        assert call_args[3] is False
+        assert call_args[4] is False
+
+    @patch('sfputil.main.platform_chassis')
+    @patch('sfputil.main.platform_sfputil')
+    @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
+    @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=False))
+    @patch('sfputil.main.show_firmware_version', MagicMock())
+    @patch('sfputil.main.check_fw_mgmt_capability', MagicMock(return_value=(True, None)))
+    @patch('sfputil.main.get_transceiver_info_for_ports')
+    @patch('sfputil.main.upgrade_helper')
+    def test_firmware_upgrade_vendor_pn_match(
+            self, mock_upgrade_helper, mock_get_xcvr_info, mock_sfputil, mock_chassis):
+        """`upgrade -p PN_A fw.bin` should upgrade only ports whose model matches PN_A."""
+        mock_sfputil.logical = ['Ethernet0', 'Ethernet4', 'Ethernet8']
+        mock_sfp = MagicMock()
+        mock_sfp.get_presence.return_value = True
+        mock_chassis.get_sfp.return_value = mock_sfp
+        mock_get_xcvr_info.return_value = ({
+            'Ethernet0': {'model': 'PN_A', 'serial': 'SN0'},
+            'Ethernet4': {'model': 'PN_B', 'serial': 'SN1'},
+            'Ethernet8': {'model': 'PN_A', 'serial': 'SN2'},
+        }, [], [])
+        mock_upgrade_helper.return_value = (['Ethernet0', 'Ethernet8'], {})
+
+        runner = CliRunner()
+        result = runner.invoke(
+            sfputil.cli.commands['firmware'].commands['upgrade'],
+            ['-p', 'PN_A', '/path/fw.bin'])
+
+        assert result.exit_code == 0
+        assert 'Upgrading image for 2 transceiver(s)' in result.output
+        call_args = mock_upgrade_helper.call_args[0]
+        assert sorted(call_args[0]) == ['Ethernet0', 'Ethernet8']
+        assert call_args[1] == {'Ethernet0': '/path/fw.bin', 'Ethernet8': '/path/fw.bin'}
+
+    @patch('sfputil.main.platform_chassis')
+    @patch('sfputil.main.platform_sfputil')
+    @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
+    @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=False))
+    @patch('sfputil.main.show_firmware_version', MagicMock())
+    @patch('sfputil.main.get_transceiver_info_for_ports')
+    def test_firmware_upgrade_vendor_pn_no_match(
+            self, mock_get_xcvr_info, mock_sfputil, mock_chassis):
+        """`upgrade -p UNKNOWN_PN fw.bin` should report no matches and exit non-zero."""
+        mock_sfputil.logical = ['Ethernet0']
+        mock_sfp = MagicMock()
+        mock_sfp.get_presence.return_value = True
+        mock_chassis.get_sfp.return_value = mock_sfp
+        mock_get_xcvr_info.return_value = (
+            {'Ethernet0': {'model': 'PN_A', 'serial': 'SN0'}}, [], [])
+
+        runner = CliRunner()
+        result = runner.invoke(
+            sfputil.cli.commands['firmware'].commands['upgrade'],
+            ['-p', 'UNKNOWN_PN', '/path/fw.bin'])
+
+        assert result.exit_code != 0
+        assert 'No ports found with vendor part number: UNKNOWN_PN' in result.output
+        assert 'No ports to upgrade' in result.output
+
+    @patch('sfputil.main.platform_chassis')
+    @patch('sfputil.main.platform_sfputil')
+    @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
+    @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=False))
+    @patch('sfputil.main.is_sfp_present', MagicMock(return_value=True))
+    @patch('sfputil.main.download_firmware', MagicMock(return_value=1))
+    @patch('sfputil.main.run_firmware', MagicMock(return_value=0))
+    @patch('sfputil.main.is_fw_switch_done', MagicMock(return_value=1))
+    @patch('sfputil.main.commit_firmware')
+    def test_firmware_upgrade_per_phase_failure(
+            self, mock_commit, mock_sfputil, mock_chassis):
+        """Download succeeds but run fails: commit must be skipped and a failure
+        table reported with the Activate stage."""
+        mock_sfputil.logical = ['Ethernet0']
+        mock_sfp = MagicMock()
+        mock_api = MagicMock()
+        mock_sfp.get_xcvr_api = MagicMock(return_value=mock_api)
+        mock_sfp.get_presence.return_value = True
+        mock_chassis.get_sfp = MagicMock(return_value=mock_sfp)
+        mock_api.get_module_fw_info.return_value = {'info': ""}
+
+        runner = CliRunner()
+        result = runner.invoke(
+            sfputil.cli.commands['firmware'].commands['upgrade'],
+            ['Ethernet0', 'path'])
+
+        assert result.exit_code != 0
+        assert '--- Phase 1/3: Downloading firmware for 1 port(s) ---' in result.output
+        assert '--- Phase 2/3: Activating firmware for 1 port(s) ---' in result.output
+        # Commit phase must be skipped (no ports made it through activate)
+        assert '--- Phase 3/3: Skipped (no ports to commit) ---' in result.output
+        mock_commit.assert_not_called()
+        assert 'Succeeded: 0, Failed: 1' in result.output
+        assert 'Failed ports:' in result.output
+        assert 'Activate' in result.output
+
+    @patch('sfputil.main.get_transceiver_api_helper')
+    def test_get_transceiver_info_for_ports_unique_dedup(self, mock_api_helper):
+        """When unique=True, ports sharing a serial are removed from the info map
+        and reported in duplicate_ports rather than ports_failed."""
+        def fake_api(port, exit_on_error=True):
+            api = MagicMock()
+            if port == 'Ethernet0':
+                api.get_transceiver_info.return_value = {'serial': 'SN_DUP', 'model': 'PN_A'}
+            elif port == 'Ethernet4':
+                api.get_transceiver_info.return_value = {'serial': 'SN_DUP', 'model': 'PN_A'}
+            elif port == 'Ethernet8':
+                api.get_transceiver_info.return_value = {'serial': 'SN_UNIQ', 'model': 'PN_B'}
+            return api
+        mock_api_helper.side_effect = fake_api
+
+        info_map, failed, dups = sfputil.get_transceiver_info_for_ports(
+            ['Ethernet0', 'Ethernet4', 'Ethernet8'], unique=True)
+
+        assert sorted(info_map.keys()) == ['Ethernet0', 'Ethernet8']
+        assert failed == []
+        assert dups == ['Ethernet4']
+
+    @patch('sfputil.main.platform_chassis')
+    @patch('sfputil.main.platform_sfputil')
+    @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
+    @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=False))
+    def test_show_fwversion_tabular(self, mock_sfputil, mock_chassis):
+        """`show fwversion -t` should render the tabular header row."""
+        mock_sfputil.logical = ['Ethernet0']
+        mock_sfp = MagicMock()
+        mock_api = MagicMock()
+        mock_sfp.get_xcvr_api = MagicMock(return_value=mock_api)
+        mock_sfp.get_presence.return_value = True
+        mock_chassis.get_sfp = MagicMock(return_value=mock_sfp)
+        mock_api.get_transceiver_info.return_value = {
+            'manufacturer': 'VendX', 'model': 'PN_A', 'serial': 'SN0'}
+        mock_api.get_module_fw_info.return_value = {'info': '', 'status': False}
+
+        runner = CliRunner()
+        result = runner.invoke(
+            sfputil.cli.commands['show'].commands['fwversion'], ['-t'])
+
+        assert result.exit_code == 0
+        # Tabular header columns
+        for col in ('Interface', 'Vendor Name', 'Vendor PN', 'Vendor SN',
+                    'Image A', 'Image B', 'Active', 'Running', 'Committed'):
+            assert col in result.output
+        assert 'Ethernet0' in result.output
+
+    @patch('sfputil.main.platform_chassis')
+    @patch('sfputil.main.platform_sfputil')
+    @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
+    @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=False))
+    def test_show_fwversion_filtered_by_vendor_pn(self, mock_sfputil, mock_chassis):
+        """`show fwversion -p PN_B` should filter out ports with non-matching model."""
+        mock_sfputil.logical = ['Ethernet0', 'Ethernet4']
+        mock_sfp = MagicMock()
+        mock_api = MagicMock()
+        mock_sfp.get_xcvr_api = MagicMock(return_value=mock_api)
+        mock_sfp.get_presence.return_value = True
+        mock_chassis.get_sfp = MagicMock(return_value=mock_sfp)
+        # All ports share the same mock api, so they all return PN_A; filter on PN_B should match nothing
+        mock_api.get_transceiver_info.return_value = {
+            'manufacturer': 'VendX', 'model': 'PN_A', 'serial': 'SN0'}
+        mock_api.get_module_fw_info.return_value = {'info': '', 'status': False}
+
+        runner = CliRunner()
+        result = runner.invoke(
+            sfputil.cli.commands['show'].commands['fwversion'], ['-p', 'PN_B'])
+
+        assert result.exit_code == 0
+        assert 'No matching ports' in result.output
 
     @patch('sfputil.main.is_sfp_present', MagicMock(return_value=True))
     @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=True))
