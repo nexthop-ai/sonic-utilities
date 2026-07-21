@@ -2919,6 +2919,11 @@ def portchannel(db, ctx, namespace):
 @click.option('--fast-rate', default='false',
               type=click.Choice(['true', 'false'],
                                 case_sensitive=False))
+<<<<<<< HEAD
+=======
+@click.option('--lacp-mode', default='coupled',
+              type=click.Choice(['coupled', 'independent'], case_sensitive=False))
+>>>>>>> f11ae14b (NOS-10747: Rename PortChannel LACP mode value couple -> coupled (#744))
 @click.pass_context
 def add_portchannel(ctx, portchannel_name, min_links, fallback, fast_rate):
     """Add port channel"""
