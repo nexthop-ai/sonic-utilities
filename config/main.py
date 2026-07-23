@@ -2919,6 +2919,13 @@ def portchannel(db, ctx, namespace):
 @click.option('--fast-rate', default='false',
               type=click.Choice(['true', 'false'],
                                 case_sensitive=False))
+<<<<<<< HEAD
+=======
+@click.option('--lacp-mode', default=None,
+              type=click.Choice(['coupled', 'independent'], case_sensitive=False),
+              help="LACP mode for this PortChannel. When omitted, the switch-wide "
+                   "DEVICE_METADATA default_lacp_mode applies.")
+>>>>>>> 72fde713 (NOS-10747: config portchannel add inherits global default_lacp_mode (#773))
 @click.pass_context
 def add_portchannel(ctx, portchannel_name, min_links, fallback, fast_rate):
     """Add port channel"""
@@ -2934,6 +2941,11 @@ def add_portchannel(ctx, portchannel_name, min_links, fallback, fast_rate):
         fvs['min_links'] = str(min_links)
     if fallback != 'false':
         fvs['fallback'] = 'true'
+    # Only persist lacp_mode when the operator explicitly chose one. Leaving it
+    # absent lets teammgrd inherit the switch-wide DEVICE_METADATA
+    # default_lacp_mode; writing it unconditionally would defeat that default.
+    if lacp_mode is not None:
+        fvs['lacp_mode'] = lacp_mode.lower()
 
     db = ValidatedConfigDBConnector(ctx.obj['db'])
     if ADHOC_VALIDATION:
