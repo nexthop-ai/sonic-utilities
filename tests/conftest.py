@@ -456,8 +456,10 @@ def setup_single_bgp_instance(request):
             test_path, 'mock_tables', 'show_run_bgp.txt')
     elif request.param == 'ip_route':
         bgp_mocked_json = 'ip_route.json'
-    elif request.param == 'ip_specific_route': 
-        bgp_mocked_json = 'ip_specific_route.json'    
+    elif request.param == 'ip_specific_route':
+        bgp_mocked_json = 'ip_specific_route.json'
+    elif request.param == 'ip_specific_duplicate_route':
+        bgp_mocked_json = 'ip_specific_duplicate_route.json'
     elif request.param == 'ipv6_specific_route':
         bgp_mocked_json = 'ipv6_specific_route.json'
     elif request.param == 'ipv6_route':
@@ -513,6 +515,7 @@ def setup_single_bgp_instance(request):
     _old_run_bgp_command = bgp_util.run_bgp_command
     if any([request.param == 'ip_route',
             request.param == 'ip_specific_route', request.param == 'ip_special_route',
+            request.param == 'ip_specific_duplicate_route',
             request.param == 'ipv6_route', request.param == 'ipv6_specific_route',
             request.param == 'ip_route_lc', request.param == 'ip_route_remote_lc']):
         bgp_util.run_bgp_command = mock.MagicMock(

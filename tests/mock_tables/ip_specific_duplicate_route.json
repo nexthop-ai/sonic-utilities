@@ -1,0 +1,41 @@
+{
+    "118.1.1.1/32": [
+        {
+            "destSelected": true,
+            "distance": 1,
+            "installed": true,
+            "internalFlags": 8,
+            "internalNextHopActiveNum": 1,
+            "internalNextHopNum": 2,
+            "internalStatus": 16,
+            "metric": 0,
+            "nexthops": [
+                {
+                    "active": true,
+                    "afi": "ipv4",
+                    "fib": true,
+                    "flags": 3,
+                    "interfaceIndex": 200,
+                    "interfaceName": "PortChannel102",
+                    "ip": "10.0.0.1",
+                    "weight": 1
+                },
+                {
+                    "active": true,
+                    "afi": "ipv4",
+                    "duplicate": true,
+                    "flags": 17,
+                    "interfaceIndex": 200,
+                    "interfaceName": "PortChannel102",
+                    "ip": "10.0.0.1",
+                    "weight": 1
+                }
+            ],
+            "prefix": "118.1.1.1/32",
+            "protocol": "static",
+            "selected": true,
+            "table": 254,
+            "uptime": "00:21:30"
+        }
+    ]
+}

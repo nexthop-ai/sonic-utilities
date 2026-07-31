@@ -93,6 +93,26 @@ Routing entry for 192.168.0.1/32
 
 """
 
+show_specific_duplicate_route_expected_output = """\
+Routing entry for 118.1.1.1/32
+  Known via "static", distance 1, metric 0, best
+  Last update 00:21:30 ago
+  * 10.0.0.1, via PortChannel102
+    10.0.0.1, via PortChannel102 duplicate
+
+"""
+
+show_table_duplicate_route_expected_output = """\
+Codes: K - kernel route, C - connected, S - static, R - RIP,
+       O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,
+       T - Table, v - VNC, V - VNC-Direct, A - Babel, D - SHARP,
+       F - PBR, f - OpenFabric,
+       > - selected route, * - FIB route, q - queued route, r - rejected route
+
+S>*118.1.1.1/32 [1/0] via 10.0.0.1, PortChannel102, 00:21:30
+                      via 10.0.0.1, PortChannel102, duplicate 00:21:30
+"""
+
 show_specific_recursive_route_expected_output = """\
 Routing entry for 193.11.208.0/25
   Known via "bgp", distance 20, metric 0, best

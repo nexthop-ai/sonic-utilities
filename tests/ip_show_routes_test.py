@@ -68,6 +68,20 @@ class TestShowIpRouteCommands(object):
         assert result.output == show_ip_route_common.show_specific_ip_route_expected_output
 
     @pytest.mark.parametrize('setup_single_bgp_instance',
+                             ['ip_specific_duplicate_route'], indirect=['setup_single_bgp_instance'])
+    def test_show_specific_duplicate_ip_route(
+            self,
+            setup_ip_route_commands,
+            setup_single_bgp_instance):
+        show = setup_ip_route_commands
+        runner = CliRunner()
+        result = runner.invoke(
+            show.cli.commands["ip"].commands["route"], ["118.1.1.1"])
+        print("{}".format(result.output))
+        assert result.exit_code == 0
+        assert result.output == show_ip_route_common.show_specific_duplicate_route_expected_output
+
+    @pytest.mark.parametrize('setup_single_bgp_instance',
                              ['ip_special_route'], indirect=['setup_single_bgp_instance'])
     def test_show_special_ip_route(
             self,
@@ -166,3 +180,15 @@ class TestShowIpRouteCommands(object):
                         bgp_routes_found = True
                         break
         assert bgp_routes_found, "BGP routes should be present in filtered output"
+
+    @pytest.mark.parametrize('setup_single_bgp_instance',
+                             ['ip_specific_duplicate_route'], indirect=["setup_single_bgp_instance"])
+    def test_show_duplicate_ip_route_table(
+            self,
+            setup_ip_route_commands,
+            setup_single_bgp_instance):
+        show = setup_ip_route_commands
+        runner = CliRunner()
+        result = runner.invoke(show.cli.commands["ip"].commands["route"], [])
+        assert result.exit_code == 0
+        assert result.output == show_ip_route_common.show_table_duplicate_route_expected_output

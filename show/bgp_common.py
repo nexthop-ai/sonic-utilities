@@ -12,7 +12,7 @@ from utilities_common import constants
 '''
 def get_status_output_char(info, nhp_i):
     NH_F_IS_RECURSIVE = 2
-    NH_F_IS_DUPLICATE = 5
+    NH_F_IS_DUPLICATE = 4
     if "queued" in info:
         return "q"
     elif "failed" in info:
@@ -56,7 +56,10 @@ def get_nexthop_info_str(nxhp_info, filterByIp):
     str_2_return = ""
     if "ip" in nxhp_info:
         if filterByIp:
-            str_2_return = "  * {}".format(nxhp_info['ip'])
+            if "duplicate" not in nxhp_info:
+                str_2_return = "  * {}".format(nxhp_info['ip'])
+            else:
+                str_2_return = "    {}".format(nxhp_info['ip'])
         else:
             str_2_return = " via {},".format(nxhp_info['ip'])
         if "interfaceName" in nxhp_info:
@@ -80,6 +83,8 @@ def get_nexthop_info_str(nxhp_info, filterByIp):
 
     if "vrf" in nxhp_info:
         str_2_return += "(vrf {}, {},".format(nxhp_info['vrf'], nxhp_info['interfaceName'])
+    if "duplicate" in nxhp_info:
+        str_2_return += " duplicate"
     if "active" not in nxhp_info:
         str_2_return += " inactive"
     if "recursive" in nxhp_info:
@@ -393,7 +398,7 @@ def show_routes(args, namespace, display, verbose, ipver):
         if output == "":
             return
         if output[0] == "%":
-            # remove the "json" keyword that was added by this handler to show original cmd user specified 
+            # remove the "json" keyword that was added by this handler to show original cmd user specified
             json_str = output[-5:-1]
             if json_str == "json":
                 error_msg = output[:-5]
