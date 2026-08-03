@@ -189,6 +189,7 @@
 * [QoS](#qos)
   * [QoS Show commands](#qos-show-commands)
     * [PFC](#pfc)
+    * [QoS Maps](#qos-maps)
     * [Queue And Priority-Group](#queue-and-priority-group)
     * [Buffer Pool](#buffer-pool)
   * [QoS config commands](#qos-config-commands)
@@ -12279,6 +12280,42 @@ This command displays the lossless priorities for all interfaces or a given inte
   -----------  ---------------------
   Ethernet0    3,4
   ```
+
+#### QoS Maps
+
+**show qos map**
+
+This command displays the contents of the QoS mapping tables configured in ConfigDB, one table per map type.
+
+- Usage:
+  ```
+  show qos map {tc-to-pg|pfc-to-pg|pfc-to-queue|dot1p-to-tc|dscp-to-tc|tc-to-queue|tc-to-dscp|tc-to-dot1p}
+  ```
+
+  | Map type     | ConfigDB table                       |
+  |--------------|--------------------------------------|
+  | tc-to-pg     | TC_TO_PRIORITY_GROUP_MAP             |
+  | pfc-to-pg    | PFC_PRIORITY_TO_PRIORITY_GROUP_MAP   |
+  | pfc-to-queue | MAP_PFC_PRIORITY_TO_QUEUE            |
+  | dot1p-to-tc  | DOT1P_TO_TC_MAP                      |
+  | dscp-to-tc   | DSCP_TO_TC_MAP                       |
+  | tc-to-queue  | TC_TO_QUEUE_MAP                      |
+  | tc-to-dscp   | TC_TO_DSCP_MAP                       |
+  | tc-to-dot1p  | TC_TO_DOT1P_MAP                      |
+
+- Example:
+  ```
+  admin@sonic:~$ show qos map pfc-to-pg
+  "PFC_PRIORITY_TO_PRIORITY_GROUP_MAP": AZURE
+  --------------------------------------------
+    pfc    pg
+  -----  ----
+      3     3
+      4     4
+  ```
+
+  The map is bound to a port through the `pfc_to_pg_map` field of `PORT_QOS_MAP`, which can be
+  displayed with `show qos interface <EthernetN|all>`.
 
 #### Queue And Priority-Group
 

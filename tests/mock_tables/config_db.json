@@ -2546,6 +2546,15 @@
     "BUFFER_QUEUE|Ethernet0|3-4": {
         "profile": "egress_lossless_profile"
     },
+    "PFC_PRIORITY_TO_PRIORITY_GROUP_MAP|AZURE": {
+        "3": "3",
+        "4": "4"
+    },
+    "TC_TO_PRIORITY_GROUP_MAP|AZURE": {
+        "0": "0",
+        "3": "3",
+        "4": "4"
+    },
     "PORT_QOS_MAP|Ethernet0": {
         "pfc_enable": "3,4",
         "scheduler": "port_scheduler"
