@@ -8,6 +8,9 @@ from natsort import natsorted
 from swsscommon.swsscommon import SonicV2Connector
 from tabulate import tabulate
 
+from utilities_common import psu_status as psu_status_common
+from utilities_common.psu_status import classify_psu_power
+
 VERSION = '1.0'
 
 def get_psu_status_list():
@@ -33,15 +36,17 @@ def get_psu_status_list():
         presence = db.get(db.STATE_DB, 'PSU_INFO|{}'.format(psu_name), 'presence')
         psu_status['presence'] = presence
 
-        if presence == 'true':
-            oper_status = db.get(db.STATE_DB, 'PSU_INFO|{}'.format(psu_name), 'status')
-            if oper_status == 'true':
-                power_overload = db.get(db.STATE_DB, 'PSU_INFO|{}'.format(psu_name), 'power_overload')
-                status = 'WARNING' if power_overload == 'True' else 'OK'
-            else:
-                status = "NOT OK"
-        else:
+        # Classify the power state with the shared logic, then map to a display label.
+        power_state = classify_psu_power(db.get_all(db.STATE_DB, 'PSU_INFO|{}'.format(psu_name)))
+        if power_state == psu_status_common.ABSENT:
             status = 'NOT PRESENT'
+        elif power_state == psu_status_common.UNPOWERED:
+            status = 'NOT POWERED'
+        elif power_state == psu_status_common.FAULTED:
+            status = 'NOT OK'
+        else:  # OK: distinguish power overload as a warning.
+            power_overload = db.get(db.STATE_DB, 'PSU_INFO|{}'.format(psu_name), 'power_overload')
+            status = 'WARNING' if power_overload == 'True' else 'OK'
         psu_status['status'] = status
 
         psu_status['led_status'] = db.get(db.STATE_DB, 'PSU_INFO|{}'.format(psu_name), 'led_status')

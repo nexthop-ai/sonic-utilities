@@ -5,6 +5,7 @@
 """
 
 import os
+import re
 import sys
 from tabulate import tabulate
 from natsort import natsorted
@@ -22,6 +23,9 @@ except KeyError:
 
 from swsscommon.swsscommon import SonicV2Connector
 
+from utilities_common import psu_status as psu_status_common
+from utilities_common.psu_status import classify_psu_power
+
 header = ['Drawer', 'LED', 'FAN', 'Speed', 'Direction', 'Presence', 'Status', 'Timestamp']
 
 FAN_TABLE_NAME = 'FAN_INFO'
@@ -33,12 +37,57 @@ STATUS_FIELD_NAME = 'status'
 LED_STATUS_FIELD_NAME = 'led_status'
 TIMESTAMP_FIELD_NAME = 'timestamp'
 
+PSU_TABLE_NAME = 'PSU_INFO'
+
 
 class FanShow(object):
     def __init__(self):
         self.db = SonicV2Connector(host="127.0.0.1")
         self.db.connect(self.db.STATE_DB)
 
+<<<<<<< HEAD
+=======
+    def _get_drawer_led_cache(self):
+        """Build a cache of drawer_name -> led_status from FAN_DRAWER_INFO table."""
+        cache = {}
+        drawer_keys = self.db.keys(self.db.STATE_DB, FAN_DRAWER_TABLE_NAME + '*')
+        if not drawer_keys:
+            return cache
+        for key in drawer_keys:
+            key_list = key.split('|')
+            if len(key_list) != 2:
+                print('Warn: Invalid key in table FAN_DRAWER_INFO: {}'.format(key))
+                continue
+            drawer_name = key_list[1]
+            data_dict = self.db.get_all(self.db.STATE_DB, key)
+            led = data_dict.get(LED_STATUS_FIELD_NAME, '')
+            if led:
+                cache[drawer_name] = led
+        return cache
+
+    def _get_fan_led(self, data_dict, drawer_led_cache):
+        """Get LED status for a fan, falling back to drawer LED if per-fan LED is N/A."""
+        led = data_dict.get(LED_STATUS_FIELD_NAME, '')
+        if led:
+            return led
+        drawer_name = data_dict.get(DRAWER_FIELD_NAME, 'N/A')
+        return drawer_led_cache.get(drawer_name, 'N/A')
+
+    def _parent_psu_power_state(self, fan_name):
+        """For a PSU fan (e.g. 'PSU3_FAN1'), return its parent PSU's power state
+        ('absent' / 'unpowered' / 'faulted' / 'ok') using the shared classifier.
+        Returns None for non-PSU fans or when the PSU row is missing."""
+        match = re.match(r'^PSU\s*(\d+)_FAN', fan_name)
+        if not match:
+            return None
+        idx = match.group(1)
+        for psu_key in ('PSU{}'.format(idx), 'PSU {}'.format(idx)):
+            data = self.db.get_all(self.db.STATE_DB, '{}|{}'.format(PSU_TABLE_NAME, psu_key))
+            if data:
+                return classify_psu_power(data)
+        return None
+
+>>>>>>> 08b27a1e (NOS-7427: improving show plat commands when psu is uninstalled (#641))
     def show(self):
         keys = self.db.keys(self.db.STATE_DB, FAN_TABLE_NAME + '*')
         if not keys:
@@ -70,7 +119,14 @@ class FanShow(object):
             if status_lower == 'true':
                 status = 'OK'
             elif status_lower == 'false':
-                status = 'Not OK'
+                # A stopped PSU fan reflects its PSU's power state, not a fan fault.
+                psu_state = self._parent_psu_power_state(name)
+                if psu_state == psu_status_common.ABSENT:
+                    status = 'Not Present'
+                elif psu_state == psu_status_common.UNPOWERED:
+                    status = 'Not Powered'
+                else:
+                    status = 'Not OK'
 
             table.append((data_dict[DRAWER_FIELD_NAME], data_dict[LED_STATUS_FIELD_NAME], name, speed, data_dict[DIRECTION_FIELD_NAME], presence, status,
                           data_dict[TIMESTAMP_FIELD_NAME]))
