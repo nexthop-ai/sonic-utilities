@@ -1,3 +1,4 @@
+import functools
 import os
 import re
 import json
@@ -175,16 +176,50 @@ def rdma_config_update_validator_common(scope, patch_element, exact_field_match=
     return True
 
 
+<<<<<<< HEAD
+def rdma_config_update_validator(scope, patch_element):
+    return rdma_config_update_validator_common(scope, patch_element, exact_field_match=True, remove_port=True)
+=======
+def _validate_table_or_object_level(path_parts, op):
+    """
+    Checks if this is a table-level (1 part) or object-level (2 parts) operation,
+    and validates if the operation is allowed ('add', 'remove', 'replace').
+    Returns True if allowed table/object-level operation, False if invalid table/object-level op,
+    and None if it's a field-level operation (3+ parts).
+    """
+    if len(path_parts) <= 2:
+        allowed_operations = ['add', 'remove', 'replace']
+        return op in allowed_operations
+    return None
+>>>>>>> dce8f0a2 (NOS-7662: Refactor field operation validators to properly consume table-level GCU patches with unit testing (#857))
+
+
+def _bypass_table_and_object_level_ops(field_level_validator):
+    """Skip field-level validation for table-level and object-level patches."""
+    @functools.wraps(field_level_validator)
+    def wrapper(scope, patch_element):
+        path_parts = jsonpointer.JsonPointer(patch_element["path"]).parts
+        is_higher_level = _validate_table_or_object_level(path_parts, patch_element["op"])
+        if is_higher_level is not None:
+            return is_higher_level
+        return field_level_validator(scope, patch_element)
+
+    return wrapper
+
+
+@_bypass_table_and_object_level_ops
 def rdma_config_update_validator(scope, patch_element):
     return rdma_config_update_validator_common(scope, patch_element, exact_field_match=True, remove_port=True)
 
 
+@_bypass_table_and_object_level_ops
 def buffer_profile_config_update_validator(scope, patch_element):
     """
     Enhanced buffer profile validator that handles both field-level and object-level operations.
     - Field-level operations (e.g., /BUFFER_PROFILE/profile/dynamic_th) follow existing rules
     - Object-level operations (e.g., /BUFFER_PROFILE/profile) allow remove operations
     """
+<<<<<<< HEAD
     path = patch_element["path"]
     path_parts = jsonpointer.JsonPointer(path).parts
 
@@ -207,6 +242,34 @@ def buffer_profile_config_update_validator(scope, patch_element):
     return rdma_config_update_validator_common(scope, patch_element)
 
 
+=======
+    return rdma_config_update_validator_common(scope, patch_element)
+
+
+@_bypass_table_and_object_level_ops
+def buffer_pool_config_update_validator(scope, patch_element):
+    """
+    Buffer pool validator that handles table-level, object-level, and field-level operations.
+    - Table-level operations (e.g., /BUFFER_POOL) allow add/remove/replace
+    - Object-level operations (e.g., /BUFFER_POOL/pool_name) allow add/remove/replace
+    - Field-level operations (e.g., /BUFFER_POOL/pool_name/size) follow existing RDMA rules
+    """
+    # For field-level operations on BUFFER_POOL, we want to be permissive
+    # Allow replace operations on size and xoff fields
+    # Only check if this is a valid field operation, don't enforce ASIC/version requirements
+    asic = get_asic_name()
+    if asic == "unknown":
+        # In test environments or when ASIC detection fails, allow the operation
+        # This is safe because YANG validation will still catch invalid values
+        return True
+
+    # For known ASICs, use the existing validation logic with endswith matching
+    # Use exact_field_match=False to handle pool names (similar to BUFFER_PROFILE)
+    # Use remove_port=True to clean port names from paths
+    return rdma_config_update_validator_common(scope, patch_element, exact_field_match=False, remove_port=True)
+
+
+>>>>>>> dce8f0a2 (NOS-7662: Refactor field operation validators to properly consume table-level GCU patches with unit testing (#857))
 def read_statedb_entry(scope, table, key, field):
     state_db = swsscommon.DBConnector(STATE_DB_NAME, REDIS_TIMEOUT_MSECS, True, scope)
     tbl = swsscommon.Table(state_db, table)

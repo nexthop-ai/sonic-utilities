@@ -347,6 +347,35 @@ class TestValidateFieldOperation:
                    return_value=True):
             assert fov.buffer_profile_config_update_validator("localhost", patch_element) is True
 
+    @pytest.mark.parametrize(
+        "validator,table", [
+            (fov.rdma_config_update_validator, "PFC_WD"),
+            (fov.buffer_pool_config_update_validator, "BUFFER_POOL"),
+            (fov.buffer_profile_config_update_validator, "BUFFER_PROFILE"),
+        ]
+    )
+    @pytest.mark.parametrize("op", ["add", "remove", "replace"])
+    @patch("generic_config_updater.field_operation_validators.get_asic_name",
+           mock.Mock(return_value="spc1"))
+    def test_table_level_operations_bypass_field_validation(self, validator, table, op):
+        patch_element = {"path": "/{}".format(table), "op": op}
+
+        with patch("generic_config_updater.field_operation_validators.rdma_config_update_validator_common",
+                   side_effect=AssertionError("table-level patch reached field validation")):
+            assert validator("localhost", patch_element) is True
+
+    @pytest.mark.parametrize(
+        "validator,table", [
+            (fov.rdma_config_update_validator, "PFC_WD"),
+            (fov.buffer_pool_config_update_validator, "BUFFER_POOL"),
+            (fov.buffer_profile_config_update_validator, "BUFFER_PROFILE"),
+        ]
+    )
+    def test_table_level_unsupported_operation_is_rejected(self, validator, table):
+        patch_element = {"path": "/{}".format(table), "op": "move"}
+
+        assert validator("localhost", patch_element) is False
+
     @patch("sonic_py_common.device_info.get_sonic_version_info",
            mock.Mock(return_value={"build_version": "SONiC.20220530"}))
     @patch("generic_config_updater.field_operation_validators.get_asic_name",
