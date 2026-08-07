@@ -140,6 +140,48 @@ class TestShowIpRouteCommands(object):
         assert result.output == show_ip_route_common.show_ipv6_route_err_expected_output + "\n"
 
     @pytest.mark.parametrize('setup_single_bgp_instance',
+                             ['ip_route_srv6'], indirect=['setup_single_bgp_instance'])
+    def test_show_ip_route_srv6(
+            self,
+            setup_ip_route_commands,
+            setup_single_bgp_instance):
+        show = setup_ip_route_commands
+        runner = CliRunner()
+        result = runner.invoke(
+            show.cli.commands["ip"].commands["route"], [])
+        print("{}".format(result.output))
+        assert result.exit_code == 0
+        assert result.output == show_ip_route_common.SHOW_IP_ROUTE_SRV6_EXPECTED_OUTPUT
+
+    @pytest.mark.parametrize('setup_single_bgp_instance',
+                             ['ip_route_srv6_specific'], indirect=['setup_single_bgp_instance'])
+    def test_show_ip_route_srv6_specific(
+            self,
+            setup_ip_route_commands,
+            setup_single_bgp_instance):
+        show = setup_ip_route_commands
+        runner = CliRunner()
+        result = runner.invoke(
+            show.cli.commands["ip"].commands["route"], ["140.1.1.0/24"])
+        print("{}".format(result.output))
+        assert result.exit_code == 0
+        assert result.output == show_ip_route_common.SHOW_IP_ROUTE_SRV6_SPECIFIC_EXPECTED_OUTPUT
+
+    @pytest.mark.parametrize('setup_single_bgp_instance',
+                             ['ip_route_srv6_connected'], indirect=['setup_single_bgp_instance'])
+    def test_show_ip_route_srv6_directly_connected(
+            self,
+            setup_ip_route_commands,
+            setup_single_bgp_instance):
+        show = setup_ip_route_commands
+        runner = CliRunner()
+        result = runner.invoke(
+            show.cli.commands["ip"].commands["route"], ["100.1.1.0/24"])
+        print("{}".format(result.output))
+        assert result.exit_code == 0
+        assert result.output == show_ip_route_common.SHOW_IP_ROUTE_SRV6_CONNECTED_EXPECTED_OUTPUT
+
+    @pytest.mark.parametrize('setup_single_bgp_instance',
                              ['ip_route'], indirect=['setup_single_bgp_instance'])
     def test_show_ip_route_bgp_json(
             self,

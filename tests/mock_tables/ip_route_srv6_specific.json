@@ -1,0 +1,65 @@
+{
+    "140.1.1.0/24": [
+        {
+            "prefix": "140.1.1.0/24",
+            "prefixLen": 24,
+            "protocol": "bgp",
+            "vrfId": 0,
+            "vrfName": "default",
+            "selected": true,
+            "destSelected": true,
+            "distance": 20,
+            "metric": 0,
+            "installed": true,
+            "table": 254,
+            "internalStatus": 16,
+            "internalFlags": 8,
+            "internalNextHopNum": 3,
+            "internalNextHopActiveNum": 3,
+            "uptime": "6d03h04m",
+            "nexthops": [
+                {
+                    "flags": 5,
+                    "ip": "1.1.1.1",
+                    "afi": "ipv4",
+                    "active": true,
+                    "recursive": true,
+                    "srteColor": 100,
+                    "weight": 1
+                },
+                {
+                    "flags": 3,
+                    "fib": true,
+                    "ip": "1003::2",
+                    "afi": "ipv6",
+                    "interfaceIndex": 4,
+                    "interfaceName": "Ethernet0",
+                    "resolver": true,
+                    "active": true,
+                    "srteColor": 100,
+                    "seg6": [
+                        "fc00::1",
+                        "fc00::2"
+                    ],
+                    "weight": 191
+                },
+                {
+                    "flags": 3,
+                    "fib": true,
+                    "ip": "1003::2",
+                    "afi": "ipv6",
+                    "interfaceIndex": 4,
+                    "interfaceName": "Ethernet0",
+                    "resolver": true,
+                    "active": true,
+                    "srteColor": 100,
+                    "seg6": [
+                        "fc00::1",
+                        "fc00::3"
+                    ],
+                    "weight": 255
+                }
+            ]
+        }
+    ]
+}

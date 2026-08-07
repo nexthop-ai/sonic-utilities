@@ -1,0 +1,22 @@
+{
+    "100.1.1.0/24": [
+        {
+            "prefix": "100.1.1.0/24",
+            "protocol": "static",
+            "distance": 1, "metric": 0,
+            "selected": true, "installed": true,
+            "uptime": "6d03h04m",
+            "nexthops": [
+                {
+                    "flags": 3,
+                    "fib": true,
+                    "directlyConnected": true,
+                    "interfaceName": "sr0",
+                    "active": true,
+                    "seg6": ["fc00::1", "fc00::2", "fc00::3"],
+                    "weight": 1
+                }
+            ]
+        }
+    ]
+}

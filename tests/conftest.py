@@ -468,6 +468,12 @@ def setup_single_bgp_instance(request):
         bgp_mocked_json = 'ip_route_lc.json'
     elif request.param == 'ip_route_remote_lc':
         bgp_mocked_json = 'ip_route_remote_lc.json'
+    elif request.param == 'ip_route_srv6':
+        bgp_mocked_json = 'ip_route_srv6.json'
+    elif request.param == 'ip_route_srv6_specific':
+        bgp_mocked_json = 'ip_route_srv6_specific.json'
+    elif request.param == 'ip_route_srv6_connected':
+        bgp_mocked_json = 'ip_route_srv6_connected.json'
     else:
         bgp_mocked_json = os.path.join(
             test_path, 'mock_tables', 'dummy.json')
@@ -514,7 +520,9 @@ def setup_single_bgp_instance(request):
     if any([request.param == 'ip_route',
             request.param == 'ip_specific_route', request.param == 'ip_special_route',
             request.param == 'ipv6_route', request.param == 'ipv6_specific_route',
-            request.param == 'ip_route_lc', request.param == 'ip_route_remote_lc']):
+            request.param == 'ip_route_lc', request.param == 'ip_route_remote_lc',
+            request.param == 'ip_route_srv6', request.param == 'ip_route_srv6_specific',
+            request.param == 'ip_route_srv6_connected']):
         bgp_util.run_bgp_command = mock.MagicMock(
             return_value=mock_run_bgp_route_command("", ""))
     elif request.param.startswith('ipv6_route_err'):

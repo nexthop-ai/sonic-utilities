@@ -25,6 +25,19 @@ def get_status_output_char(info, nhp_i):
 
     return ""
 
+
+def is_resolver_nexthop(nxhp_info):
+    """FRR lists recursively-resolved nexthops flat in the json and tags them
+    with "resolver". They are printed shifted right by 2 spaces per recursion
+    level to nest them under their recursive parent, matching FRR's
+    "2 * nexthop_level(nexthop)" indentation in zebra_vty.c.
+    FRR's JSON only exposes a binary resolver flag; actual depth is always 0 or 1.
+    """
+    if "resolver" in nxhp_info:
+        return 1
+    return 0
+
+
 def get_distance_metric_str(info):
     if info['protocol'] != "connected":
         return (" [{}/{}]".format(info['distance'], info['metric']))
@@ -52,11 +65,45 @@ def get_mpls_label_strgs(label_list):
             label_str_2_return += "/" + label_string
     return label_str_2_return
 
+
+def get_nexthop_additional_info_str(nxhp_info):
+    str_2_print = ""
+    # print the seg6 list
+    if nxhp_info.get('seg6'):
+        str_2_print += " seg6 {}".format(','.join(nxhp_info['seg6']))
+    # print the SRTE color only on the recursive parent hop (the SR-TE policy nexthop),
+    # not on each resolved/resolver hop, mirroring vtysh behaviour.
+    if nxhp_info.get('recursive') and nxhp_info.get('srteColor'):
+        if str_2_print and str_2_print[-1] != ",":
+            str_2_print += ","
+        str_2_print += " color {}".format(nxhp_info['srteColor'])
+    # print the weight
+    if nxhp_info.get('weight'):
+        if str_2_print and str_2_print[-1] != ",":
+            str_2_print += ","
+        str_2_print += " weight {}".format(nxhp_info['weight'])
+
+    return str_2_print
+
+
 def get_nexthop_info_str(nxhp_info, filterByIp):
     str_2_return = ""
     if "ip" in nxhp_info:
         if filterByIp:
+<<<<<<< HEAD
             str_2_return = "  * {}".format(nxhp_info['ip'])
+=======
+            if "duplicate" not in nxhp_info:
+                str_2_return = "  * "
+            else:
+                str_2_return = "    "
+
+            # Align the indentation for the subsequent nexthops to match that of FRR.
+            # Adding 2 spaces for each recursion level of the nexthop to indent it under its recursive parent.
+            # FRR JSON guarantees the recursive parent (recursive=true) always precedes its resolver children.
+            str_2_return += " "*(2 * is_resolver_nexthop(nxhp_info))
+            str_2_return += nxhp_info['ip']
+>>>>>>> 02ee2881 (NOS-11856: Extending command - "show ip route" for SRv6 SID list (#785))
         else:
             str_2_return = " via {},".format(nxhp_info['ip'])
         if "interfaceName" in nxhp_info:
@@ -94,7 +141,17 @@ def get_nexthop_info_str(nxhp_info, filterByIp):
     if "labels" in nxhp_info:
         # MPLS labels are stored as an array (list) in json if present. Need to print through each one in list
         str_2_return += ", label {}".format(get_mpls_label_strgs(nxhp_info['labels']))
-    return str_2_return
+
+    # print the seg6, color, weight. The color is printed only once on the first nexthop line.
+    str_2_print = get_nexthop_additional_info_str(nxhp_info)
+
+    # if there is something to print, and the string to return does not end with a comma, add one
+    if str_2_print:
+        if str_2_return and str_2_return[-1] != ",":
+            str_2_return += ","
+
+    return str_2_return + str_2_print
+
 
 def get_ip_value(ipn):
     ip_intf = ipaddress.ip_interface(ipn[0])
@@ -161,10 +218,13 @@ def print_ip_routes(route_info, filter_by_ip):
                 print("  Last update {} ago".format(info[i]['uptime']))
                 for j in range(0, len(info[i]['nexthops'])):
                     if "directlyConnected" in info[i]['nexthops'][j]:
-                        print("  * directly connected, {}\n".format(info[i]['nexthops'][j]['interfaceName']))
+                        str_2_print = "  * directly connected, {}".format(info[i]['nexthops'][j]['interfaceName'])
+                        # print the seg6, color, weight. The color is printed only once on the first nexthop line.
+                        str_2_print_tmp = get_nexthop_additional_info_str(info[i]['nexthops'][j])
+                        str_2_print += "," + str_2_print_tmp if str_2_print_tmp else ""
                     else:
                         str_2_print = get_nexthop_info_str(info[i]['nexthops'][j], True)
-                        print(str_2_print)
+                    print(str_2_print)
                 print("")
             else:
                 str_2_print = ""
@@ -185,8 +245,14 @@ def print_ip_routes(route_info, filter_by_ip):
                         str_2_print += info[i]['prefix'] + get_distance_metric_str(info[i])
                         str_length = len(str_2_print)
                     else:
-                        # For all subsequent nexthops skip the spacing to not repeat the prefix section
-                        str_2_print += " "*(str_length - 3)
+                        # For all subsequent nexthops skip the spacing to not repeat the prefix section.
+                        # Recursively-resolved nexthops are shifted right by 2 spaces per recursion level
+                        # to nest them under their recursive parent, matching FRR (2 * nexthop_level).
+                        # FRR JSON guarantees the recursive parent (recursive=true) always
+                        # precedes its resolver children, so j==0 is never a resolver.
+                        recursion_padding = 2 * is_resolver_nexthop(info[i]['nexthops'][j])
+                        str_2_print += " " * (str_length - 3 + recursion_padding)
+
                     # Get the nexhop info portion of the string
                     str_2_print += get_nexthop_info_str(info[i]['nexthops'][j], False)
                     # add uptime at the end of the string

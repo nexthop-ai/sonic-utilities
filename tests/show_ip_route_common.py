@@ -93,6 +93,29 @@ Routing entry for 192.168.0.1/32
 
 """
 
+<<<<<<< HEAD
+=======
+show_specific_duplicate_route_expected_output = """\
+Routing entry for 118.1.1.1/32
+  Known via "static", distance 1, metric 0, best
+  Last update 00:21:30 ago
+  * 10.0.0.1, via PortChannel102, weight 1
+    10.0.0.1, via PortChannel102 duplicate, weight 1
+
+"""
+
+show_table_duplicate_route_expected_output = """\
+Codes: K - kernel route, C - connected, S - static, R - RIP,
+       O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,
+       T - Table, v - VNC, V - VNC-Direct, A - Babel, D - SHARP,
+       F - PBR, f - OpenFabric,
+       > - selected route, * - FIB route, q - queued route, r - rejected route
+
+S>*118.1.1.1/32 [1/0] via 10.0.0.1, PortChannel102, weight 1 00:21:30
+                      via 10.0.0.1, PortChannel102, duplicate, weight 1 00:21:30
+"""
+
+>>>>>>> 02ee2881 (NOS-11856: Extending command - "show ip route" for SRv6 SID list (#785))
 show_specific_recursive_route_expected_output = """\
 Routing entry for 193.11.208.0/25
   Known via "bgp", distance 20, metric 0, best
@@ -803,12 +826,10 @@ Routing entry for 10.0.0.4/31
   Last update 2d22h00m ago
   * directly connected, PortChannel0005
 
-
 Routing entry for 10.0.0.4/31
   Known via "connected", distance 0, metric 0, best
   Last update 2d22h02m ago
   * directly connected, PortChannel1016
-
 
 """
 
@@ -817,7 +838,6 @@ Routing entry for 2603:10e2:400::/128
   Known via "connected", distance 0, metric 0, best
   Last update 2d22h00m ago
   * directly connected, Loopback4096
-
 
 """
 
@@ -883,10 +903,10 @@ Codes: K - kernel route, C - connected, S - static, R - RIP,
        F - PBR, f - OpenFabric,
        > - selected route, * - FIB route, q - queued route, r - rejected route
 
-B> 0.0.0.0/0 [200/0]   via 20.1.24.128, recursive via iBGP 04w0d12h
-                       via 20.1.16.128, recursive via iBGP 04w0d12h
-                       via 20.1.8.128, recursive via iBGP 04w0d12h
-                       via 20.1.0.128, recursive via iBGP 04w0d12h
+B> 0.0.0.0/0 [200/0]   via 20.1.24.128, recursive via iBGP, weight 1 04w0d12h
+                       via 20.1.16.128, recursive via iBGP, weight 1 04w0d12h
+                       via 20.1.8.128, recursive via iBGP, weight 1 04w0d12h
+                       via 20.1.0.128, recursive via iBGP, weight 1 04w0d12h
 """
 
 SHOW_IP_ROUTE_LC = """\
@@ -896,20 +916,20 @@ Codes: K - kernel route, C - connected, S - static, R - RIP,
        F - PBR, f - OpenFabric,
        > - selected route, * - FIB route, q - queued route, r - rejected route
 
-B>*0.0.0.0/0 [20/0] via 20.1.24.128, PortChannel13, 04w0d11h
-  *                 via 20.1.16.128, PortChannel9, 04w0d11h
-  *                 via 20.1.8.128, PortChannel5, 04w0d11h
-  *                 via 20.1.0.128, PortChannel1, 04w0d11h
+B>*0.0.0.0/0 [20/0] via 20.1.24.128, PortChannel13, weight 1 04w0d11h
+  *                 via 20.1.16.128, PortChannel9, weight 1 04w0d11h
+  *                 via 20.1.8.128, PortChannel5, weight 1 04w0d11h
+  *                 via 20.1.0.128, PortChannel1, weight 1 04w0d11h
 """
 
 SHOW_IP_ROUTE_REMOTE_LC_DEFAULT_ROUTE = """\
 Routing entry for 0.0.0.0/0
   Known via "bgp", distance 200, metric 0, best
   Last update 04w0d12h ago
-    * 20.1.24.128 recursive via iBGP
-    * 20.1.16.128 recursive via iBGP
-    * 20.1.8.128 recursive via iBGP
-    * 20.1.0.128 recursive via iBGP
+    * 20.1.24.128 recursive via iBGP, weight 1
+    * 20.1.16.128 recursive via iBGP, weight 1
+    * 20.1.8.128 recursive via iBGP, weight 1
+    * 20.1.0.128 recursive via iBGP, weight 1
 
 """
 
@@ -917,10 +937,10 @@ SHOW_IP_ROUTE_LC_DEFAULT_ROUTE = """\
 Routing entry for 0.0.0.0/0
   Known via "bgp", distance 20, metric 0, best
   Last update 04w0d11h ago
-  * 20.1.24.128, via PortChannel13
-  * 20.1.16.128, via PortChannel9
-  * 20.1.8.128, via PortChannel5
-  * 20.1.0.128, via PortChannel1
+  * 20.1.24.128, via PortChannel13, weight 1
+  * 20.1.16.128, via PortChannel9, weight 1
+  * 20.1.8.128, via PortChannel5, weight 1
+  * 20.1.0.128, via PortChannel1, weight 1
 
 """
 
@@ -928,7 +948,40 @@ SHOW_IP_ROUTE_LC_DEFAULT_ROUTE_2 = """\
 Routing entry for 0.0.0.0/0
   Known via "bgp", distance 20, metric 0, best
   Last update 01:01:51 ago
-  * 10.0.0.7, via PortChannel106
-  * 10.0.0.1, via PortChannel102
+  * 10.0.0.7, via PortChannel106, weight 1
+  * 10.0.0.1, via PortChannel102, weight 1
+
+"""
+
+SHOW_IP_ROUTE_SRV6_EXPECTED_OUTPUT = """\
+Codes: K - kernel route, C - connected, S - static, R - RIP,
+       O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,
+       T - Table, v - VNC, V - VNC-Direct, A - Babel, D - SHARP,
+       F - PBR, f - OpenFabric,
+       > - selected route, * - FIB route, q - queued route, r - rejected route
+
+S>*100.1.1.0/24 [1/0] is directly connected, sr0, seg6 fc00::1,fc00::2,fc00::3, weight 1 6d03h04m
+B> 140.1.1.0/24 [20/0] via 1.1.1.1, (recursive), color 100, weight 1 6d03h04m
+  *                      via 1003::2, Ethernet0, seg6 fc00::1,fc00::2, weight 191 6d03h04m
+  *                      via 1003::2, Ethernet0, seg6 fc00::1,fc00::3, weight 255 6d03h04m
+B>*150.1.1.0/24 [20/0] via 2003::5, Ethernet4, seg6 fc00::a,fc00::b, weight 10 6d03h04m
+  *                    via 2003::6, Ethernet8, seg6 fc00::c, weight 20 6d03h04m
+"""
+
+SHOW_IP_ROUTE_SRV6_SPECIFIC_EXPECTED_OUTPUT = """\
+Routing entry for 140.1.1.0/24
+  Known via "bgp", distance 20, metric 0, best
+  Last update 6d03h04m ago
+  * 1.1.1.1 (recursive), color 100, weight 1
+  *   1003::2, via Ethernet0, seg6 fc00::1,fc00::2, weight 191
+  *   1003::2, via Ethernet0, seg6 fc00::1,fc00::3, weight 255
+
+"""
+
+SHOW_IP_ROUTE_SRV6_CONNECTED_EXPECTED_OUTPUT = """\
+Routing entry for 100.1.1.0/24
+  Known via "static", distance 1, metric 0, best
+  Last update 6d03h04m ago
+  * directly connected, sr0, seg6 fc00::1,fc00::2,fc00::3, weight 1
 
 """

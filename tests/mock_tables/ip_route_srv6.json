@@ -1,0 +1,136 @@
+{
+    "140.1.1.0/24": [
+        {
+            "prefix": "140.1.1.0/24",
+            "prefixLen": 24,
+            "protocol": "bgp",
+            "vrfId": 0,
+            "vrfName": "default",
+            "selected": true,
+            "destSelected": true,
+            "distance": 20,
+            "metric": 0,
+            "installed": true,
+            "table": 254,
+            "internalStatus": 16,
+            "internalFlags": 8,
+            "internalNextHopNum": 3,
+            "internalNextHopActiveNum": 3,
+            "uptime": "6d03h04m",
+            "nexthops": [
+                {
+                    "flags": 5,
+                    "ip": "1.1.1.1",
+                    "afi": "ipv4",
+                    "active": true,
+                    "recursive": true,
+                    "srteColor": 100,
+                    "weight": 1
+                },
+                {
+                    "flags": 3,
+                    "fib": true,
+                    "ip": "1003::2",
+                    "afi": "ipv6",
+                    "interfaceIndex": 4,
+                    "interfaceName": "Ethernet0",
+                    "resolver": true,
+                    "active": true,
+                    "srteColor": 100,
+                    "seg6": [
+                        "fc00::1",
+                        "fc00::2"
+                    ],
+                    "weight": 191
+                },
+                {
+                    "flags": 3,
+                    "fib": true,
+                    "ip": "1003::2",
+                    "afi": "ipv6",
+                    "interfaceIndex": 4,
+                    "interfaceName": "Ethernet0",
+                    "resolver": true,
+                    "active": true,
+                    "srteColor": 100,
+                    "seg6": [
+                        "fc00::1",
+                        "fc00::3"
+                    ],
+                    "weight": 255
+                }
+            ]
+        }
+    ],
+    "150.1.1.0/24": [
+        {
+            "prefix": "150.1.1.0/24",
+            "prefixLen": 24,
+            "protocol": "bgp",
+            "vrfId": 0,
+            "vrfName": "default",
+            "selected": true,
+            "destSelected": true,
+            "distance": 20,
+            "metric": 0,
+            "installed": true,
+            "table": 254,
+            "internalStatus": 16,
+            "internalFlags": 8,
+            "internalNextHopNum": 2,
+            "internalNextHopActiveNum": 2,
+            "uptime": "6d03h04m",
+            "nexthops": [
+                {
+                    "flags": 3,
+                    "fib": true,
+                    "ip": "2003::5",
+                    "afi": "ipv6",
+                    "interfaceIndex": 5,
+                    "interfaceName": "Ethernet4",
+                    "active": true,
+                    "srteColor": 200,
+                    "seg6": [
+                        "fc00::a",
+                        "fc00::b"
+                    ],
+                    "weight": 10
+                },
+                {
+                    "flags": 3,
+                    "fib": true,
+                    "ip": "2003::6",
+                    "afi": "ipv6",
+                    "interfaceIndex": 6,
+                    "interfaceName": "Ethernet8",
+                    "active": true,
+                    "srteColor": 200,
+                    "seg6": [
+                        "fc00::c"
+                    ],
+                    "weight": 20
+                }
+            ]
+        }
+    ],
+    "100.1.1.0/24": [
+        {
+            "prefix": "100.1.1.0/24",
+            "protocol": "static",
+            "distance": 1, "metric": 0,
+            "selected": true, "installed": true,
+            "uptime": "6d03h04m",
+            "nexthops": [
+                {
+                    "flags": 3,
+                    "fib": true,
+                    "directlyConnected": true,
+                    "interfaceName": "sr0",
+                    "active": true,
+                    "seg6": ["fc00::1", "fc00::2", "fc00::3"],
+                    "weight": 1
+                }
+            ]
+        }
+    ]
+}
