@@ -46,6 +46,8 @@ NUM_ASICS=1
 HOME=${HOME:-/root}
 USER=${USER:-root}
 TIMEOUT_MIN="5"
+VTYSH_TIMEOUT_SEC="20"
+VTYSH_LIVENESS_TIMEOUT_SEC="5"
 SKIP_BCMCMD=0
 SAVE_STDERR=true
 RETURN_CODE=$EXT_SUCCESS
@@ -457,11 +459,50 @@ get_vtysh_namespace() {
 }
 
 ###############################################################################
+# Check if FRR is responsive to vtysh commands
+# Globals:
+#  VTYSH_LIVENESS_TIMEOUT_SEC
+# Arguments:
+#  None
+# Returns:
+#  0 if FRR responds, 1 if timeout/unresponsive
+###############################################################################
+frr_is_responsive() {
+    # No ERR trap here: a non-zero exit is the expected outcome of the probe.
+    # The braces keep the redirection in effect while the shell reaps the
+    # SIGKILLed timeout, suppressing its "Killed" job diagnostic on stderr.
+    { timeout -s KILL ${VTYSH_LIVENESS_TIMEOUT_SEC} vtysh -c "show version"; } &> /dev/null
+}
+
+###############################################################################
+# Records that an FRR section was skipped because FRR is unresponsive, both as
+# a marker file inside the dump and as a syslog line (the dump alone is easy to
+# miss when techsupport is auto-invoked from a core).
+# Globals:
+#  LOGDIR, MKDIR, V, VTYSH_LIVENESS_TIMEOUT_SEC
+# Arguments:
+#  section: frr, bgp or evpn
+# Returns:
+#  None
+###############################################################################
+save_frr_skipped() {
+    trap 'handle_error $? $LINENO' ERR
+    local section=$1
+    local msg="FRR unresponsive (vtysh probe timed out after ${VTYSH_LIVENESS_TIMEOUT_SEC}s), skipping ${section} information collection"
+
+    if [ ! -d "$LOGDIR" ]; then
+        $MKDIR $V -p "$LOGDIR"
+    fi
+    echo "$msg" > "$LOGDIR/${section}.status"
+    logger -t generate_dump -p user.warning "$msg"
+}
+
+###############################################################################
 # Runs a vtysh command in all namespaces for a multi ASIC platform, and in
 # default (host) namespace in single ASIC platforms. Saves its output to the
 # file.
 # Globals:
-#  None
+#  VTYSH_TIMEOUT_SEC
 # Arguments:
 #  cmd: the vtysh command to run. This should NOT include vtysh -c
 #  filename: The filename to save the output as.
@@ -476,12 +517,12 @@ save_vtysh() {
     local do_gzip=${3:-false}
 
     if [[ ( "$NUM_ASICS" == 1 ) ]] ; then
-        save_cmd "vtysh -c '${vtysh_cmd}'" "$filename" $do_gzip
+        save_cmd "timeout -s KILL ${VTYSH_TIMEOUT_SEC} vtysh -c '${vtysh_cmd}'" "$filename" $do_gzip
     else
         for (( i=0; i<$NUM_ASICS; i++ ))
         do
             ns_cmd=$(get_vtysh_namespace $i)
-            local cmd="vtysh $ns_cmd -c '${vtysh_cmd}'"
+            local cmd="timeout -s KILL ${VTYSH_TIMEOUT_SEC} vtysh $ns_cmd -c '${vtysh_cmd}'"
             local file=$filename.$i
             save_cmd "$cmd" "$file" "$do_gzip"
         done
@@ -558,9 +599,9 @@ save_bgp_neighbor() {
     local asic_id=${1:-""}
     local ns=$(get_vtysh_namespace $asic_id)
 
-    neighbor_list_v4=$(${timeout_cmd} bash -c "vtysh $ns -c 'show ip bgp neighbors' | grep 'BGP neighbor is' | awk -F '[, ]' '{print \$4}' | awk /\\\./")
+    neighbor_list_v4=$(${timeout_cmd} bash -c "timeout -s KILL ${VTYSH_TIMEOUT_SEC} vtysh $ns -c 'show ip bgp neighbors' | grep 'BGP neighbor is' | awk -F '[, ]' '{print \$4}' | awk /\\\./")
     if [ ! -z "$neighbor_list_v4" ]; then
-        v4_cmd="vtysh "
+        v4_cmd="timeout -s KILL ${VTYSH_TIMEOUT_SEC} vtysh "
         for word in $neighbor_list_v4; do
             v4_cmd="${v4_cmd} $ns -Ec 'show bgp ipv4 neighbors $word advertised-routes' "
             v4_cmd="${v4_cmd} $ns -Ec 'show bgp ipv4 neighbors $word routes' "
@@ -568,9 +609,9 @@ save_bgp_neighbor() {
         save_cmd "$v4_cmd" "ip.bgp.neigh.adv.rcv.routes"
     fi
 
-    neighbor_list_v6=$(${timeout_cmd} bash -c "vtysh $ns -c 'show bgp ipv6 neighbors' | grep 'BGP neighbor is' | awk -F '[, ]' '{print \$4}' | awk /:/")
+    neighbor_list_v6=$(${timeout_cmd} bash -c "timeout -s KILL ${VTYSH_TIMEOUT_SEC} vtysh $ns -c 'show bgp ipv6 neighbors' | grep 'BGP neighbor is' | awk -F '[, ]' '{print \$4}' | awk /:/")
     if [ ! -z "$neighbor_list_v6" ]; then
-        v6_cmd="vtysh "
+        v6_cmd="timeout -s KILL ${VTYSH_TIMEOUT_SEC} vtysh "
         for word in $neighbor_list_v6; do
             v6_cmd="${v6_cmd} $ns -Ec 'show bgp ipv6 neighbors $word advertised-routes' "
             v6_cmd="${v6_cmd} $ns -Ec 'show bgp ipv6 neighbors $word routes' "
@@ -579,15 +620,15 @@ save_bgp_neighbor() {
     fi
 
     vrf_list=""
-    vrf_output=$(${timeout_cmd} bash -c "vtysh $ns -c 'show vrf'")
-    if [ ! -z $vrf_output]; then
-        vrf_list= echo $vrf_output | awk -F" " '{print $2}'
+    vrf_output=$(${timeout_cmd} bash -c "timeout -s KILL ${VTYSH_TIMEOUT_SEC} vtysh $ns -c 'show vrf'")
+    if [ ! -z $vrf_output ]; then
+        vrf_list=$(echo $vrf_output | awk -F" " '{print $2}')
     fi
 
     if [ ! -z "$vrf_list" ]; then
-        vrf_cmd="vtysh "
+        vrf_cmd="timeout -s KILL ${VTYSH_TIMEOUT_SEC} vtysh "
         for vrf in $vrf_list; do
-            neighbor_list=`${timeout_cmd} bash -c "vtysh $ns -c 'show ip bgp vrf $vrf neighbors' | grep 'BGP neighbor is' | awk -F '[, ]' '{print \$4}'"`
+            neighbor_list=`${timeout_cmd} bash -c "timeout -s KILL ${VTYSH_TIMEOUT_SEC} vtysh $ns -c 'show ip bgp vrf $vrf neighbors' | grep 'BGP neighbor is' | awk -F '[, ]' '{print \$4}'"`
             for word in $neighbor_list; do
                 vrf_cmd="${vrf_cmd} $ns -Ec 'show ip bgp vrf $vrf neighbors $word advertised-routes' "
                 vrf_cmd="${vrf_cmd} $ns -Ec 'show ip bgp vrf $vrf neighbors $word routes' "
@@ -614,7 +655,7 @@ save_bgp_evpn_neighbor() {
     local asic_id=${1:-""}
     local ns=$(get_vtysh_namespace $asic_id)
 
-    evpn_neighbors=$(${timeout_cmd} bash -c "vtysh -c 'show bgp l2vpn evpn summary' | cut -d ' ' -f1")
+    evpn_neighbors=$(${timeout_cmd} bash -c "timeout -s KILL ${VTYSH_TIMEOUT_SEC} vtysh -c 'show bgp l2vpn evpn summary' | cut -d ' ' -f1")
     local parse_neighbors=false
     for word in $evpn_neighbors; do
         if [[ $word == "Neighbor" ]]; then
@@ -625,8 +666,8 @@ save_bgp_evpn_neighbor() {
             continue
         fi
         if [ "$parse_neighbors" = true ]; then
-            save_cmd "vtysh $ns -c \"show bgp l2vpn evpn neighbors $word advertised-routes\"" "bgp.evpn.neighbor.$word.adv$asic_id"
-            save_cmd "vtysh $ns -c \"show bgp l2vpn evpn neighbors $word routes\"" "bgp.evpn.neighbor.$word.rcv$asic_id"
+            save_cmd "timeout -s KILL ${VTYSH_TIMEOUT_SEC} vtysh $ns -c \"show bgp l2vpn evpn neighbors $word advertised-routes\"" "bgp.evpn.neighbor.$word.adv$asic_id"
+            save_cmd "timeout -s KILL ${VTYSH_TIMEOUT_SEC} vtysh $ns -c \"show bgp l2vpn evpn neighbors $word routes\"" "bgp.evpn.neighbor.$word.rcv$asic_id"
         fi
     done
 }
@@ -748,6 +789,10 @@ save_bgp_info() {
     if $IS_SUPERVISOR || $IS_SWITCH_BMC; then
         return
     fi
+    if ! frr_is_responsive; then
+        save_frr_skipped "bgp"
+        return
+    fi
     save_vtysh "show ip bgp summary" "bgp.summary"
     save_vtysh "show ip bgp neighbors" "bgp.neighbors"
     save_vtysh "show ip bgp" "bgp.table"
@@ -788,6 +833,10 @@ save_evpn_info() {
     if $IS_SUPERVISOR || $IS_SWITCH_BMC; then
         return
     fi
+    if ! frr_is_responsive; then
+        save_frr_skipped "evpn"
+        return
+    fi
     save_vtysh "show bgp l2vpn evpn" "bgp.l2vpn.evpn"
     save_vtysh "show bgp l2vpn evpn summary json" "bgp.evpn.summary.json"
     save_vtysh "show bgp l2vpn evpn route" "bgp.evpn.route"
@@ -822,6 +871,10 @@ save_evpn_info() {
 save_frr_info() {
     trap 'handle_error $? $LINENO' ERR
     if $IS_SUPERVISOR || $IS_SWITCH_BMC; then
+        return
+    fi
+    if ! frr_is_responsive; then
+        save_frr_skipped "frr"
         return
     fi
     save_vtysh "show running-config" "frr.running_config"
@@ -1184,14 +1237,19 @@ get_route_table_size_by_asic_id_and_ipver() {
     local ns=""
     RC=0
 
+    if ! frr_is_responsive; then
+        save_frr_skipped "saidump.route_summary"
+        return 1
+    fi
+
     if [[ $NUM_ASICS -gt 1 ]] ; then
         ns="-n ${asic_id}"
     fi
 
     if [ $ip_ver = "ipv4" ]; then
-        cmd="vtysh ${ns} -c 'show ip route summary json'"
+        cmd="timeout -s KILL ${VTYSH_TIMEOUT_SEC} vtysh ${ns} -c 'show ip route summary json'"
     elif [ $ip_ver = "ipv6" ]; then
-        cmd="vtysh ${ns} -c 'show ipv6 route summary json'"
+        cmd="timeout -s KILL ${VTYSH_TIMEOUT_SEC} vtysh ${ns} -c 'show ipv6 route summary json'"
     else
         echo "Wrong argument $ip_ver."
         return 255

@@ -26,9 +26,11 @@ if [[ ! -z $CONTAINER_ID ]]; then
       for path in $(find /usr/local/lib/python3*/dist-packages -maxdepth 0); do
           PYTHONPATH=$PYTHONPATH:$path
       done
-      setsid $(echo > /tmp/coredump_gen_handler.log;
-             export PYTHONPATH=$PYTHONPATH;
-             python3 /usr/local/bin/coredump_gen_handler.py ${PREFIX}core.gz ${CONTAINER_NAME} &>> /tmp/coredump_gen_handler.log) &
+      ( exec < /dev/null
+              echo > /tmp/coredump_gen_handler.log
+              export PYTHONPATH=$PYTHONPATH
+              setsid python3 /usr/local/bin/coredump_gen_handler.py "${PREFIX}core.gz" \
+                  "${CONTAINER_NAME}" &>> /tmp/coredump_gen_handler.log ) &
    fi
 fi
 
