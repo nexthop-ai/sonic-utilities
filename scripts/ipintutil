@@ -57,10 +57,11 @@ def get_bgp_peer():
     config_db.connect()
     data = config_db.get_table("BGP_NEIGHBOR")
 
-    for neighbor_ip in data.keys():
+    for neighbor_key in data.keys():
+        neighbor_ip = neighbor_key[-1] if isinstance(neighbor_key, tuple) else neighbor_key
         try:
-            local_addr = data[neighbor_ip]["local_addr"]
-            neighbor_name = data[neighbor_ip]["name"]
+            local_addr = data[neighbor_key]["local_addr"]
+            neighbor_name = data[neighbor_key]["name"]
             bgp_peer.setdefault(local_addr, [neighbor_name, neighbor_ip])
         except KeyError:
             pass
