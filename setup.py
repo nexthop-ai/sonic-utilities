@@ -166,6 +166,7 @@ setup(
         'scripts/portconfig',
         'scripts/portstat',
         'scripts/pfcstat',
+        'scripts/pfcwdstat',
         'scripts/psushow',
         'scripts/queuestat',
         'scripts/reboot',
