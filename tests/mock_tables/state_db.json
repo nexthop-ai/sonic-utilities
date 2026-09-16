@@ -35,6 +35,22 @@
         "nominal_bit_rate": "255",
         "application_advertisement": "N/A"
     },
+    "TRANSCEIVER_CMIS_STATE_TIMESTAMPS|Ethernet0": {
+        "INSERTED_transitions": "1",
+        "INSERTED_last_updated": "1711414796000",
+        "DP_DEINIT_transitions": "1",
+        "DP_DEINIT_last_updated": "1711414796100",
+        "AP_CONFIGURED_transitions": "1",
+        "AP_CONFIGURED_last_updated": "1711414796200",
+        "DP_INIT_transitions": "1",
+        "DP_INIT_last_updated": "1711414796300",
+        "DP_TXON_transitions": "1",
+        "DP_TXON_last_updated": "1711414796400",
+        "DP_ACTIVATION_transitions": "1",
+        "DP_ACTIVATION_last_updated": "1711414796500",
+        "READY_transitions": "1",
+        "READY_last_updated": "1711414796600"
+    },
     "TRANSCEIVER_DOM_SENSOR|Ethernet0": {
         "temperature": "30.9258",
         "voltage": "3.2824",
@@ -823,7 +839,8 @@
     },
     "TRANSCEIVER_STATUS_SW|Ethernet0": {
         "status": "67",
-        "error": "Blocking Error|High temperature"
+        "error": "Blocking Error|High temperature",
+        "cmis_state": "READY"
     },
     "TRANSCEIVER_INFO|Ethernet4": {
         "type": "SFP28 25G Pluggable Transceiver",

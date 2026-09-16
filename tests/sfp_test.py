@@ -1109,6 +1109,62 @@ Ethernet36  Present
         expected = "Ethernet200: Transceiver status info not applicable"
         assert result_lines == expected
 
+    def test_cmis_transitions(self):
+        runner = CliRunner()
+        result = runner.invoke(
+            show.cli.commands["interfaces"].commands["transceiver"].commands["cmis"].commands["transitions"],
+            ["Ethernet0"])
+        assert result.exit_code == 0
+        assert "Ethernet0 (Current: READY)" in result.output
+        assert "CMIS State" in result.output
+        assert "Transitions" in result.output
+        assert "Last Updated" in result.output
+        # All CMIS states are listed, including ones with no recorded transitions
+        for state in ["UNKNOWN", "INSERTED", "DP_INIT", "READY", "FAILED"]:
+            assert state in result.output
+        # States with no recorded timestamp show N/A
+        assert "N/A" in result.output
+        # Relative timestamp column is shown by default
+        assert "Relative Timestamp" in result.output
+        # READY has a timestamp so it should show a relative time (e.g. "days ago")
+        assert "ago" in result.output
+
+    def test_cmis_transitions_relative_timestamp(self):
+        runner = CliRunner()
+        result = runner.invoke(
+            show.cli.commands["interfaces"].commands["transceiver"].commands["cmis"].commands["transitions"],
+            ["--relative-timestamp", "Ethernet0"])
+        assert result.exit_code == 0
+        assert "Relative Timestamp" in result.output
+        # READY has a timestamp so it should show a relative time (e.g. "days ago")
+        assert "ago" in result.output
+
+    def test_cmis_transitions_no_relative_timestamp(self):
+        runner = CliRunner()
+        result = runner.invoke(
+            show.cli.commands["interfaces"].commands["transceiver"].commands["cmis"].commands["transitions"],
+            ["--no-relative-timestamp", "Ethernet0"])
+        assert result.exit_code == 0
+        assert "Ethernet0 (Current: READY)" in result.output
+        assert "Last Updated" in result.output
+        # Relative timestamp column is suppressed
+        assert "Relative Timestamp" not in result.output
+
+    def test_cmis_transitions_no_data(self):
+        runner = CliRunner()
+        result = runner.invoke(
+            show.cli.commands["interfaces"].commands["transceiver"].commands["cmis"].commands["transitions"],
+            ["Ethernet200"])
+        assert result.exit_code == 0
+        assert result.output.strip('\n') == "No CMIS state transition data found for port Ethernet200"
+
+    def test_cmis_transitions_all_ports(self):
+        runner = CliRunner()
+        result = runner.invoke(
+            show.cli.commands["interfaces"].commands["transceiver"].commands["cmis"].commands["transitions"])
+        assert result.exit_code == 0
+        assert "Ethernet0 (Current: READY)" in result.output
+
     @classmethod
     def teardown_class(cls):
         print("TEARDOWN")

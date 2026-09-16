@@ -7,6 +7,7 @@
 """
 
 import ast
+import datetime
 import os
 import re
 import sys
@@ -16,7 +17,7 @@ import click
 from natsort import natsorted
 from utilities_common import platform_sfputil_helper
 from sonic_py_common import multi_asic
-from utilities_common.general import load_db_config
+from utilities_common.general import load_db_config, format_relative_time
 from utilities_common.sfp_helper import covert_application_advertisement_to_output_string
 from utilities_common.sfp_helper import (
         QSFP_DATA_MAP,
@@ -299,6 +300,25 @@ ZR_PM_NOT_APPLICABLE_STR = 'Transceiver performance monitoring not applicable'
 
 QSFP_STATUS_NOT_APPLICABLE_STR = 'Transceiver status info not applicable'
 
+# CMIS state machine states tracked in the TRANSCEIVER_CMIS_STATE_TIMESTAMPS table.
+# Keep in sync with the CMIS_STATE_* constants in sonic-platform-daemons
+# xcvrd/xcvrd_utilities/common.py (the source of truth that xcvrd uses when
+# populating this table); states missing from this list are not displayed.
+CMIS_STATES = [
+    'UNKNOWN',
+    'INSERTED',
+    'DP_PRE_INIT_CHECK',
+    'DP_DEINIT',
+    'AP_CONFIGURED',
+    'DP_INIT',
+    'DP_TXON',
+    'DP_ACTIVATION',
+    'READY',
+    'REMOVED',
+    'FAILED',
+]
+
+
 def display_invalid_intf_eeprom(intf_name):
     output = intf_name + ': SFP EEPROM Not detected\n'
     click.echo(output)
@@ -320,15 +340,17 @@ def display_invalid_intf_status(intf_name):
     click.echo(output)
 
 class SFPShow(object):
-    def __init__(self, intf_name, namespace_option, dump_dom=False):
+    def __init__(self, intf_name, namespace_option, dump_dom=False, relative_timestamp=True):
         super(SFPShow, self).__init__()
         self.db = None
         self.intf_name = intf_name
         self.dump_dom = dump_dom
+        self.relative_timestamp = relative_timestamp
         self.table = []
         self.intf_eeprom: Dict[str, str] = {}
         self.intf_pm: Dict[str, str] = {}
         self.intf_status: Dict[str, str] = {}
+        self.intf_cmis_transitions: Dict[str, str] = {}
         self.multi_asic = multi_asic_util.MultiAsic(namespace_option=namespace_option)
 
     # Convert dict values to cli output string
@@ -791,6 +813,53 @@ class SFPShow(object):
                     self.intf_status[interface] = self.convert_interface_sfp_status_to_cli_output_string(
                         self.db, interface)
 
+    def convert_interface_cmis_transitions_to_cli_output_string(self, interface_name):
+        data = self.db.get_all(self.db.STATE_DB, 'TRANSCEIVER_CMIS_STATE_TIMESTAMPS|{}'.format(interface_name))
+        if not data:
+            return None
+
+        table_data = []
+        for state in CMIS_STATES:
+            transitions = data.get('{}_transitions'.format(state), '0')
+            timestamp_ms = data.get('{}_last_updated'.format(state), None)
+
+            if timestamp_ms:
+                ts = int(timestamp_ms)
+                timestamp_str = datetime.datetime.fromtimestamp(ts / 1000.0).strftime('%Y-%m-%d %H:%M:%S.') + \
+                    '{:03d}'.format(ts % 1000)
+            else:
+                timestamp_str = 'N/A'
+
+            row = [state, transitions, timestamp_str]
+
+            if self.relative_timestamp:
+                row.append(format_relative_time(timestamp_ms) if timestamp_ms else 'N/A')
+
+            table_data.append(row)
+
+        headers = ['CMIS State', 'Transitions', 'Last Updated']
+        if self.relative_timestamp:
+            headers.append('Relative Timestamp')
+
+        status_sw = self.db.get_all(self.db.STATE_DB, 'TRANSCEIVER_STATUS_SW|{}'.format(interface_name))
+        current_state = status_sw.get('cmis_state', 'N/A') if status_sw else 'N/A'
+        return '(Current: {})\n{}'.format(current_state, tabulate(table_data, headers=headers))
+
+    @multi_asic_util.run_on_multi_asic
+    def get_cmis_transitions(self):
+        if self.intf_name is not None:
+            output = self.convert_interface_cmis_transitions_to_cli_output_string(self.intf_name)
+            if output:
+                self.intf_cmis_transitions[self.intf_name] = output
+        else:
+            port_table_keys = self.db.keys(self.db.APPL_DB, "PORT_TABLE:*")
+            for i in port_table_keys:
+                interface = re.split(':', i, maxsplit=1)[-1].strip()
+                if interface and self.is_valid_physical_port(interface):
+                    output = self.convert_interface_cmis_transitions_to_cli_output_string(interface)
+                    if output:
+                        self.intf_cmis_transitions[interface] = output
+
     def display_eeprom(self):
         click.echo("\n".join([f"{k}: {v}" for k, v in natsorted(self.intf_eeprom.items())]))
 
@@ -806,6 +875,16 @@ class SFPShow(object):
     def display_status(self):
         click.echo(
             "\n".join([f"{k}: {v}" for k, v in natsorted(self.intf_status.items())]))
+
+    def display_cmis_transitions(self):
+        if not self.intf_cmis_transitions:
+            if self.intf_name is not None:
+                click.echo('No CMIS state transition data found for port {}'.format(self.intf_name))
+            else:
+                click.echo('No CMIS state transition data found')
+            return
+        click.echo(
+            "\n\n".join([f"{k} {v}" for k, v in natsorted(self.intf_cmis_transitions.items())]))
 # This is our main entrypoint - the main 'sfpshow' command
 
 
@@ -908,6 +987,26 @@ def status(port, namespace):
     sfp = SFPShow(port, namespace)
     sfp.get_status()
     sfp.display_status()
+
+# 'cmis-transitions' subcommand
+
+
+@cli.command('cmis-transitions')
+@click.option('-p', '--port', metavar='<port_name>', help="Display CMIS state transitions for port <port_name> only")
+@click.option('--relative-timestamp/--no-relative-timestamp', 'relative_timestamp', default=True,
+              help="Show/hide relative time since last state update (shown by default)")
+@click.option('-n', '--namespace', default=None, help="Display interfaces for specific namespace")
+def cmis_transitions(port, relative_timestamp, namespace):
+    if port and multi_asic.is_multi_asic() and namespace is None:
+        try:
+            namespace = multi_asic.get_namespace_for_port(port)
+        except Exception:
+            click.echo('No CMIS state transition data found for port {}'.format(port))
+            sys.exit(1)
+
+    sfp = SFPShow(port, namespace, relative_timestamp=relative_timestamp)
+    sfp.get_cmis_transitions()
+    sfp.display_cmis_transitions()
 
 
 if __name__ == "__main__":

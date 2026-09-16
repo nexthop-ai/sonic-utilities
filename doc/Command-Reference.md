@@ -1265,7 +1265,7 @@ This command displays information for all the interfaces for the transceiver req
 
 - Usage:
   ```
-  show interfaces transceiver (eeprom [-d|--dom] | info | lpmode | presence | error-status [-hw|--fetch-from-hardware] | pm | status) [<interface_name>]
+  show interfaces transceiver (eeprom [-d|--dom] | info | lpmode | presence | error-status [-hw|--fetch-from-hardware] | pm | status | cmis transitions [--no-relative-timestamp]) [<interface_name>]
   ```
 
 - Example (Decode and display information stored on the EEPROM of SFP transceiver connected to Ethernet0):
@@ -2175,6 +2175,25 @@ Ethernet0:
         ELS Vcc low warning flag: False
         ELS module state: High power mode
         ELS interrupt status: Interrupt event cleared
+  ```
+
+- Example (Display CMIS state machine transition counters and timestamps for the transceiver connected to Ethernet0). The relative timestamp column is shown by default; pass `--no-relative-timestamp` to hide it):
+  ```
+  admin@sonic:~$ show interfaces transceiver cmis transitions Ethernet0
+  Ethernet0 (Current: READY)
+  CMIS State           Transitions  Last Updated             Relative Timestamp
+  -----------------  -------------  -----------------------  --------------------
+  UNKNOWN                        0  N/A                      N/A
+  INSERTED                       1  2026-06-11 16:54:51.809  25 days ago
+  DP_PRE_INIT_CHECK              0  N/A                      N/A
+  DP_DEINIT                      2  2026-06-11 16:56:31.809  25 days ago
+  AP_CONFIGURED                  2  2026-06-11 16:58:11.809  25 days ago
+  DP_INIT                        2  2026-06-11 16:59:51.809  25 days ago
+  DP_TXON                        2  2026-06-11 17:01:31.809  25 days ago
+  DP_ACTIVATION                  2  2026-06-11 17:03:11.809  25 days ago
+  READY                          2  2026-06-11 17:53:51.809  25 days ago
+  REMOVED                        0  N/A                      N/A
+  FAILED                         0  N/A                      N/A
   ```
 
 Go Back To [Beginning of the document](#) or [Beginning of this section](#basic-show-commands)

@@ -789,6 +789,40 @@ def error_status(db, interfacename, fetch_from_hardware, namespace, verbose):
     clicommon.run_command(cmd, display_cmd=verbose)
 
 
+@transceiver.group(cls=clicommon.AliasedGroup)
+def cmis():
+    """Show CMIS information for transceivers"""
+    pass
+
+
+@cmis.command()
+@click.argument('interfacename', required=False)
+@click.option('--relative-timestamp/--no-relative-timestamp', 'relative_timestamp', default=True, show_default=True,
+              help="Show/hide relative time since last state update (shown by default)")
+@click.option('--namespace', '-n', 'namespace', default=None, show_default=True,
+              type=click.Choice(multi_asic_util.multi_asic_ns_choices()), help='Namespace name or all')
+@click.option('--verbose', is_flag=True, help="Enable verbose output")
+def transitions(interfacename, relative_timestamp, namespace, verbose):
+    """Show CMIS state transitions for a transceiver"""
+
+    ctx = click.get_current_context()
+
+    cmd = ['sfpshow', 'cmis-transitions']
+
+    if interfacename is not None:
+        interfacename = try_convert_interfacename_from_alias(ctx, interfacename)
+
+        cmd += ['-p', str(interfacename)]
+
+    if not relative_timestamp:
+        cmd += ['--no-relative-timestamp']
+
+    if namespace is not None:
+        cmd += ['-n', str(namespace)]
+
+    clicommon.run_command(cmd, display_cmd=verbose)
+
+
 #
 # counters group ("show interfaces counters ...")
 #
