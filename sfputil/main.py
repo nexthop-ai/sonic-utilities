@@ -1285,6 +1285,7 @@ def lpmode(port, use_lpmode_pin):
 
     click.echo(tabulate(output_table, table_header, tablefmt='simple'))
 
+<<<<<<< HEAD
 def show_firmware_version(physical_port):
     try:
         sfp = platform_chassis.get_sfp(physical_port)
@@ -1297,6 +1298,82 @@ def show_firmware_version(physical_port):
     except NotImplementedError:
         click.echo("This functionality is currently not implemented for this platform")
         sys.exit(ERROR_NOT_IMPLEMENTED)
+=======
+
+def show_firmware_version(port_name, interface_filter=None, vendor_pn_filter=None,
+                          tabulate_output=False, verbose=False):
+    ports = get_present_sfp_ports_names_list()
+    if port_name:
+        if port_name not in ports:
+            click.echo("Error: SFP not present on port '{}'".format(port_name))
+            sys.exit(ERROR_INVALID_PORT)
+        ports = [port_name]
+
+    transceiver_info_map, _, _ = get_transceiver_info_for_ports(ports, unique=True)
+    ports = get_interface_names_sorted_by_interface_number(list(transceiver_info_map.keys()))
+
+    if interface_filter:
+        ports = list(set(ports) & set(interface_filter))
+        if not ports:
+            click.echo("No matching ports")
+            return
+
+    if vendor_pn_filter:
+        ports = [port for port in ports if transceiver_info_map[port].get('model') in vendor_pn_filter]
+        if not ports:
+            click.echo("No matching ports")
+            return
+
+    module_firmware_info_map, ports_failed_to_get_module_firmware_info = \
+        get_module_firmware_info_for_ports(ports, verbose=verbose)
+
+    if tabulate_output:
+        header = [
+            'Interface', 'Vendor Name', 'Vendor PN', 'Vendor SN',
+            'Image A', 'Image B', 'Active', 'Running', 'Committed'
+        ]
+        table_data = []
+
+    # Sort the ports by interface number
+    ports = get_interface_names_sorted_by_interface_number(ports)
+
+    for port in ports:
+        transceiver_info = transceiver_info_map[port]
+        fw_info = module_firmware_info_map.get(port)
+        (vendor_name, vendor_pn, vendor_sn, image_a, image_b,
+         active_fw, inactive_fw, factory_image, running_image,
+         committed_image) = get_fwversion_fields(
+            transceiver_info, fw_info)
+
+        if tabulate_output:
+            table_data.append([
+                port,
+                vendor_name,
+                vendor_pn,
+                vendor_sn,
+                image_a,
+                image_b,
+                active_fw,
+                running_image,
+                committed_image
+            ])
+        else:
+            click.echo("Interface: {}".format(port))
+            click.echo("Vendor Name: {}".format(vendor_name))
+            click.echo("Vendor PN: {}".format(vendor_pn))
+            click.echo("Vendor SN: {}".format(vendor_sn))
+            click.echo("Image A Version: {}".format(image_a))
+            click.echo("Image B Version: {}".format(image_b))
+            click.echo("Factory Image Version: {}".format(factory_image))
+            click.echo("Running Image: {}".format(running_image))
+            click.echo("Committed Image: {}".format(committed_image))
+            click.echo("Active Firmware: {}".format(active_fw))
+            click.echo("Inactive Firmware: {}".format(inactive_fw))
+            click.echo()
+
+    if tabulate_output:
+        click.echo(tabulate(table_data, header, tablefmt='simple'))
+>>>>>>> 786ac68e (NOS-12082: Lower memory added as backup to CMIS modules without CDB (#913))
 
 # 'fwversion' subcommand
 @show.command()
@@ -1378,9 +1455,6 @@ def set_lpmode(logical_port, enable, use_lpmode_pin=False):
 
         i += 1
 
-
-# 'show' subcommand — alias of `sfputil show lpmode`
-lpmode.add_command(show.commands['lpmode'], name='show')
 
 # 'off' subcommand
 @lpmode.command()
@@ -1583,6 +1657,7 @@ def is_fw_switch_done(port_name):
     try:
         MAX_WAIT = 60
         timeout_time = time.time() + MAX_WAIT
+        last_error = ''
         while time.time() < timeout_time:
             fw_info = api.get_module_fw_info()
             if fw_info['status'] is True and fw_info['result'] is not None:
@@ -1602,10 +1677,20 @@ def is_fw_switch_done(port_name):
                     click.echo("FW images switch successful : ImageB is running")
                     return 1
                 # Switch not done yet — module may have returned stale pre-reset data, keep polling
+            else:
+                # CmisApi contains CDB read errors and reports them here
+                last_error = fw_info.get('info', '')
 
             time.sleep(2)
+<<<<<<< HEAD
 
         click.echo("FW switch : Timeout!")
+=======
+        if last_error:
+            click.echo("FW switch : Timeout! Last error : {}".format(last_error))
+        else:
+            click.echo("FW switch : Timeout!")
+>>>>>>> 786ac68e (NOS-12082: Lower memory added as backup to CMIS modules without CDB (#913))
         status = -1
 
     except NotImplementedError:
@@ -1764,8 +1849,341 @@ def commit(port_name):
         click.echo('Failed to commit firmware! CDB status: {}'.format(status))
         sys.exit(EXIT_FAIL)
 
+<<<<<<< HEAD
     update_firmware_info_to_state_db(port_name)
     click.echo("Firmware commit successful")
+=======
+
+def get_transceiver_info_for_one_port(port):
+    """Helper function to fetch transceiver info for a single port"""
+    try:
+        api = get_transceiver_api_helper(port, exit_on_error=False)
+        if api is None:
+            return port, None, "Transceiver API not available"
+        transceiver_info = api.get_transceiver_info()
+        return port, transceiver_info, None
+    except Exception as e:
+        return port, None, str(e)
+
+
+def get_transceiver_info_for_ports(ports, unique=False):
+    """Fetch transceiver info for multiple ports in parallel.
+
+    Returns a tuple of (transceiver_info_map, ports_failed, duplicate_ports). When
+    unique=True, ports sharing a 'serial' with another port are removed from the
+    info map and returned in duplicate_ports rather than ports_failed.
+    """
+    transceiver_info_map = {}
+    ports_failed_to_get_transceiver_info = []
+    duplicate_ports = []
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = {executor.submit(get_transceiver_info_for_one_port, port): port for port in ports}
+        for future in concurrent.futures.as_completed(futures):
+            port, transceiver_info, error = future.result()
+            if transceiver_info is not None:
+                transceiver_info_map[port] = transceiver_info
+            else:
+                ports_failed_to_get_transceiver_info.append(port)
+
+    if unique:
+        # If multiple ports have same 'serial' number, keep only the one with lowest port number
+        seen = set()
+        for port in get_interface_names_sorted_by_interface_number(list(transceiver_info_map.keys())):
+            serial = transceiver_info_map[port].get('serial')
+            if serial is not None and serial not in seen:
+                seen.add(serial)
+            else:
+                duplicate_ports.append(port)
+                del transceiver_info_map[port]
+    return transceiver_info_map, ports_failed_to_get_transceiver_info, duplicate_ports
+
+
+def get_module_firmware_info_for_one_port(port, verbose=False):
+    """Helper function to fetch module firmware info for a single port"""
+    try:
+        api = get_transceiver_api_helper(port, exit_on_error=False)
+        if api is None:
+            if verbose:
+                click.echo(f"{port}: transceiver API not available")
+            return port, None, "Transceiver API not available"
+        fw_info = api.get_module_fw_info()
+        return port, fw_info, None
+    except NotImplementedError:
+        if verbose:
+            click.echo(f"{port}: get_module_fw_info not implemented for this transceiver")
+        return port, None, "NotImplementedError"
+    except Exception as e:
+        if verbose:
+            click.echo(f"{port}: failed to get module firmware info: {e}")
+        return port, None, str(e)
+
+
+def get_module_firmware_info_for_ports(ports, verbose=False):
+    """Fetch module firmware info for multiple ports in parallel"""
+    module_firmware_info_map = {}
+    ports_failed_to_get_module_firmware_info = []
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = {executor.submit(get_module_firmware_info_for_one_port, port, verbose): port for port in ports}
+        for future in concurrent.futures.as_completed(futures):
+            port, fw_info, error = future.result()
+            if fw_info is not None:
+                module_firmware_info_map[port] = fw_info
+            else:
+                ports_failed_to_get_module_firmware_info.append(port)
+    return module_firmware_info_map, ports_failed_to_get_module_firmware_info
+
+
+def get_fwversion_fields(transceiver_info, fw_info):
+    """fw_info is None for ports whose firmware info could not be fetched; every
+    firmware field is then 'N/A'."""
+    vendor_name = transceiver_info.get('manufacturer', 'N/A') if transceiver_info else 'N/A'
+    vendor_pn = transceiver_info.get('model', 'N/A') if transceiver_info else 'N/A'
+    vendor_sn = transceiver_info.get('serial', 'N/A') if transceiver_info else 'N/A'
+
+    image_a = image_b = active_fw = inactive_fw = 'N/A'
+    factory_image = running_image = committed_image = 'N/A'
+
+    if fw_info and fw_info.get('status'):
+        # Prefer the structured tuple over parsing the human-readable 'info' string;
+        # the tuple layout is fixed by the lower-layer API contract.
+        result = fw_info.get('result')
+        if isinstance(result, tuple) and len(result) >= 10:
+            (image_a, image_a_running, image_a_committed, _image_a_valid,
+             image_b, image_b_running, image_b_committed, _image_b_valid,
+             active_fw, inactive_fw) = result[:10]
+            if image_a_running == 1:
+                running_image = 'A'
+            elif image_b_running == 1:
+                running_image = 'B'
+            if image_a_committed == 1:
+                committed_image = 'A'
+            elif image_b_committed == 1:
+                committed_image = 'B'
+
+        # 'Factory Image Version' is not part of the structured tuple,
+        # so it must still be read from the info text.
+        info = fw_info.get('info', '') or ''
+        for line in info.strip().split('\n'):
+            if 'Factory Image Version:' in line:
+                factory_image = line.split(':', 1)[1].strip()
+                break
+    elif fw_info:
+        active_fw = fw_info.get('active_firmware', 'N/A')
+        inactive_fw = fw_info.get('inactive_firmware', 'N/A')
+
+    return (vendor_name, vendor_pn, vendor_sn, image_a, image_b,
+            active_fw, inactive_fw, factory_image, running_image,
+            committed_image)
+
+
+def get_present_sfp_ports_names_list():
+    ports = []
+    logical_port_list = natsorted(platform_sfputil.logical)
+    for logical_port_name in logical_port_list:
+        if is_port_type_rj45(logical_port_name):
+            continue
+        physical_port = logical_port_to_physical_port_index(logical_port_name)
+        sfp = platform_chassis.get_sfp(physical_port)
+        if not sfp.get_presence():
+            continue
+        ports.append(logical_port_name)
+    return ports
+
+
+def display_fw_mgmt_failure_cause(ports_failed_status_info):
+    ports_failed = get_interface_names_sorted_by_interface_number(list(ports_failed_status_info.keys()))
+    table = []
+    for port in ports_failed:
+        status_tuple = ports_failed_status_info[port]
+
+        # Handle if it's a tuple (normal case) or string (error case)
+        if isinstance(status_tuple, tuple) and len(status_tuple) == 4:
+            download_status, run_status, commit_status, error_reason = status_tuple
+        else:
+            # Fallback: treat the whole thing as an error message
+            download_status = False
+            run_status = False
+            error_reason = str(status_tuple)
+
+        if not download_status:
+            stage = "Download"
+        elif not run_status:
+            stage = "Activate"
+        else:
+            stage = "Commit"
+
+        # Parse error_reason to extract status code
+        if isinstance(error_reason, str):
+            # Check if it's in format "status=XX"
+            if error_reason.startswith("status="):
+                status_code = error_reason.split("=")[1]
+            else:
+                # It's an exception message or other error
+                status_code = error_reason
+        else:
+            # It's a numeric status code
+            status_code = str(error_reason)
+
+        table.append([port, stage, status_code])
+    output = "Failed ports:\n" + tabulate(table, headers=["Interface", "Stage Failed", "Status Code"])
+    click.secho(output, fg='yellow')
+    click.echo()
+
+
+def run_helper(ports, run_delay, verbose):
+    """Run/activate firmware on multiple ports in parallel
+
+    Args:
+        ports: List of port names to activate firmware on
+        run_delay: Delay in seconds after run before checking fw switch status
+        verbose: Whether to print verbose messages
+
+    Returns:
+        Tuple of (ports_succeeded, ports_failed) where ports_failed is {port: error_msg}
+    """
+    ports_succeeded = []
+    ports_failed = {}
+
+    def run_one_port(port):
+        try:
+            default_mode = 0
+            status = run_firmware(port, default_mode, exit_on_error=False, verbose=verbose)
+            if status != 1:
+                return False, f"status={status}"
+
+            time.sleep(run_delay)
+
+            status = is_fw_switch_done(port, exit_on_error=False, verbose=verbose)
+            if status != 1:
+                return False, f"status={status}"
+
+            return True, ""
+        except Exception as e:
+            return False, str(e)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=128) as executor:
+        futures = {executor.submit(run_one_port, port): port for port in ports}
+        for future in concurrent.futures.as_completed(futures):
+            port = futures[future]
+            try:
+                success, error_msg = future.result()
+                if success:
+                    ports_succeeded.append(port)
+                else:
+                    ports_failed[port] = error_msg
+            except Exception as e:
+                if verbose:
+                    click.echo("Error activating firmware for port {}: {}".format(port, str(e)))
+                ports_failed[port] = str(e)
+
+    return ports_succeeded, ports_failed
+
+
+def commit_helper(ports, verbose):
+    """Commit firmware on multiple ports in parallel
+
+    Args:
+        ports: List of port names to commit firmware on
+        verbose: Whether to print verbose messages
+
+    Returns:
+        Tuple of (ports_succeeded, ports_failed) where ports_failed is {port: error_msg}
+    """
+    ports_succeeded = []
+    ports_failed = {}
+
+    def commit_one_port(port):
+        try:
+            status = commit_firmware(port, exit_on_error=False, verbose=verbose)
+            if status != 1:
+                return False, f"status={status}"
+            return True, ""
+        except Exception as e:
+            return False, str(e)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=128) as executor:
+        futures = {executor.submit(commit_one_port, port): port for port in ports}
+        for future in concurrent.futures.as_completed(futures):
+            port = futures[future]
+            try:
+                success, error_msg = future.result()
+                if success:
+                    ports_succeeded.append(port)
+                else:
+                    ports_failed[port] = error_msg
+            except Exception as e:
+                if verbose:
+                    click.echo("Error committing firmware for port {}: {}".format(port, str(e)))
+                ports_failed[port] = str(e)
+
+    return ports_succeeded, ports_failed
+
+
+def upgrade_helper(ports, port_to_firmware_map, run_delay, verbose, show_progress):
+    """Helper function to upgrade firmware on multiple ports in three sequential phases:
+       1. Download firmware on all ports in parallel
+       2. Activate firmware on all ports in parallel
+       3. Commit firmware on all ports in parallel
+
+    Ports that fail in one phase are excluded from subsequent phases.
+
+    Args:
+        ports: List of port names to upgrade
+        port_to_firmware_map: Dictionary mapping port names to firmware file paths
+        run_delay: Delay after run before checking fw switch status
+        verbose: Whether to print verbose messages
+        show_progress: Whether to show individual progress bars
+
+    Returns:
+        Tuple of (ports_succeeded, ports_failed_status_info)
+    """
+    start_time = datetime.datetime.now()
+    click.echo(f"CDB: Starting firmware upgrade: {start_time.strftime('%H:%M:%S')}")
+
+    ports_succeeded = []
+    ports_failed_status_info = {}
+
+    # Phase 1: Download firmware on all ports in parallel
+    click.echo(f"\n--- Phase 1/3: Downloading firmware for {len(ports)} port(s) ---")
+    dl_succeeded, dl_failed_status_info = download_helper(ports, port_to_firmware_map, verbose, show_progress)
+    # download_helper already returns tuples, so just update ports_failed_status_info
+    ports_failed_status_info.update(dl_failed_status_info)
+
+    # Phase 2: Activate firmware on all successfully downloaded ports in parallel
+    ports_to_run = get_interface_names_sorted_by_interface_number(dl_succeeded)
+    if ports_to_run:
+        click.echo(f"\n--- Phase 2/3: Activating firmware for {len(ports_to_run)} port(s) ---")
+        run_succeeded, run_failed = run_helper(ports_to_run, run_delay, verbose)
+        for port, error_msg in run_failed.items():
+            ports_failed_status_info[port] = (True, False, False, error_msg)
+    else:
+        run_succeeded = []
+        click.echo("\n--- Phase 2/3: Skipped (no ports to activate) ---")
+
+    # Phase 3: Commit firmware on all activated ports in parallel
+    ports_to_commit = get_interface_names_sorted_by_interface_number(run_succeeded)
+    if ports_to_commit:
+        click.echo(f"\n--- Phase 3/3: Committing firmware for {len(ports_to_commit)} port(s) ---")
+        commit_succeeded, commit_failed = commit_helper(ports_to_commit, verbose)
+        for port, error_msg in commit_failed.items():
+            ports_failed_status_info[port] = (True, True, False, error_msg)
+        ports_succeeded = commit_succeeded
+    else:
+        click.echo("\n--- Phase 3/3: Skipped (no ports to commit) ---")
+
+    end_time = datetime.datetime.now()
+    delta = end_time - start_time
+    delta_seconds = int(delta.total_seconds())
+    click.echo(
+        f"\nCDB: Finished firmware upgrade: {end_time.strftime('%H:%M:%S')}. "
+        f"Time taken: {delta_seconds} seconds")
+
+    success_count = len(ports_succeeded)
+    fail_count = len(ports_failed_status_info)
+    click.echo("\nSucceeded: {}, Failed: {}\n".format(success_count, fail_count))
+    return ports_succeeded, ports_failed_status_info
+
+>>>>>>> 786ac68e (NOS-12082: Lower memory added as backup to CMIS modules without CDB (#913))
 
 # 'upgrade' subcommand
 @firmware.command()

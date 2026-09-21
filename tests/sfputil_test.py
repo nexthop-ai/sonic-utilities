@@ -565,6 +565,103 @@ class TestSfputil(object):
         result = runner.invoke(sfputil.cli.commands['show'].commands['fwversion'], ["Ethernet0"])
         assert result.exit_code == 0
 
+    @staticmethod
+    def _mock_sfp_for_fwversion(mock_chassis, mock_sfputil, api):
+        """Wire a single-port chassis whose transceiver exposes the given api."""
+        mock_sfputil.logical = ['Ethernet0']
+        mock_sfp = MagicMock()
+        mock_sfp.get_xcvr_api = MagicMock(return_value=api)
+        mock_sfp.get_presence.return_value = True
+        mock_chassis.get_sfp = MagicMock(return_value=mock_sfp)
+
+    @staticmethod
+    def _transceiver_info(media_type='sm_media_interface'):
+        return {
+            'manufacturer': 'Acme', 'model': 'ACME-400G-DR4', 'serial': 'SN00001',
+            'specification_compliance': media_type,
+        }
+
+    @patch('sfputil.main.platform_chassis')
+    @patch('sfputil.main.platform_sfputil')
+    @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
+    @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=False))
+    def test_show_firmware_version_reports_api_attached_fallback(self, mock_sfputil, mock_chassis):
+        """CDB failed: CmisApi attaches versions read from lower memory to the
+        dict and they are displayed. Per-bank fields are CDB-only and stay N/A."""
+        mock_api = MagicMock()
+        mock_api.get_transceiver_info.return_value = self._transceiver_info()
+        mock_api.get_module_fw_info.return_value = {
+            'status': False, 'info': 'CDB Not supported', 'result': None,
+            'active_firmware': '3.2', 'inactive_firmware': 'N/A'}
+        self._mock_sfp_for_fwversion(mock_chassis, mock_sfputil, mock_api)
+
+        runner = CliRunner()
+        result = runner.invoke(sfputil.cli.commands['show'].commands['fwversion'], ["Ethernet0"])
+        assert result.exit_code == 0
+        assert "Active Firmware: 3.2" in result.output
+        assert "Inactive Firmware: N/A" in result.output
+        assert "Image A Version: N/A" in result.output
+        assert "Running Image: N/A" in result.output
+
+    @patch('sfputil.main.platform_chassis')
+    @patch('sfputil.main.platform_sfputil')
+    @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
+    @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=False))
+    def test_show_firmware_version_not_implemented_port_still_listed(self, mock_sfputil, mock_chassis):
+        """A non-CMIS transceiver (no CDB, no firmware registers) used to
+        vanish from the output entirely; it must be listed with N/A."""
+        mock_api = MagicMock(spec=['get_transceiver_info', 'get_module_fw_info'])
+        mock_api.get_transceiver_info.return_value = self._transceiver_info()
+        mock_api.get_module_fw_info.side_effect = NotImplementedError
+        self._mock_sfp_for_fwversion(mock_chassis, mock_sfputil, mock_api)
+
+        runner = CliRunner()
+        result = runner.invoke(sfputil.cli.commands['show'].commands['fwversion'], ["Ethernet0"])
+        assert result.exit_code == 0
+        assert "Interface: Ethernet0" in result.output
+        assert "Active Firmware: N/A" in result.output
+
+    @patch('sfputil.main.platform_chassis')
+    @patch('sfputil.main.platform_sfputil')
+    @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
+    @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=False))
+    def test_show_firmware_version_cdb_exception_port_still_listed(self, mock_sfputil, mock_chassis):
+        """get_module_fw_info runs in a worker thread; an i2c error must not
+        propagate through future.result() and kill the command for all ports."""
+        mock_api = MagicMock()
+        mock_api.get_transceiver_info.return_value = self._transceiver_info()
+        mock_api.get_module_fw_info.side_effect = OSError('i2c timeout')
+        self._mock_sfp_for_fwversion(mock_chassis, mock_sfputil, mock_api)
+
+        runner = CliRunner()
+        result = runner.invoke(sfputil.cli.commands['show'].commands['fwversion'], ["Ethernet0"])
+        assert result.exit_code == 0
+        assert "Interface: Ethernet0" in result.output
+        assert "Active Firmware: N/A" in result.output
+
+    @patch('sfputil.main.platform_chassis')
+    @patch('sfputil.main.platform_sfputil')
+    @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
+    @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=False))
+    def test_show_firmware_version_cdb_success_is_unchanged(self, mock_sfputil, mock_chassis):
+        """When CDB works its values are used verbatim."""
+        mock_api = MagicMock()
+        mock_api.get_transceiver_info.return_value = self._transceiver_info()
+        mock_api.get_module_fw_info.return_value = {
+            'status': True,
+            'info': 'Factory Image Version: 1.0.0\n',
+            'result': ('N/A', 0, 0, 1, '3.2.0', 1, 1, 0, '3.2.0', 'N/A'),
+        }
+        self._mock_sfp_for_fwversion(mock_chassis, mock_sfputil, mock_api)
+
+        runner = CliRunner()
+        result = runner.invoke(sfputil.cli.commands['show'].commands['fwversion'], ["Ethernet0"])
+        assert result.exit_code == 0
+        assert "Image B Version: 3.2.0" in result.output
+        assert "Running Image: B" in result.output
+        assert "Committed Image: B" in result.output
+        assert "Factory Image Version: 1.0.0" in result.output
+
     @patch('sfputil.main.platform_chassis')
     @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
     def test_firmware_show(self, mock_chassis):
@@ -726,55 +823,6 @@ Ethernet0  On
         assert result.exit_code == ERROR_NOT_IMPLEMENTED
         mock_sfp.get_lpmode_via_pin.assert_called_once_with()
         assert "This functionality is currently not implemented for this platform" in result.output
-
-    @patch('sfputil.main.platform_chassis')
-    @patch('sfputil.main.logical_port_name_to_physical_port_list', MagicMock(return_value=[1]))
-    @patch('sfputil.main.platform_sfputil', MagicMock(is_logical_port=MagicMock(return_value=1)))
-    def test_lpmode_show(self, mock_chassis):
-        mock_sfp = MagicMock()
-        mock_api = MagicMock()
-        mock_sfp.get_xcvr_api = MagicMock(return_value=mock_api)
-        mock_sfp.get_lpmode.return_value = True
-        mock_sfp.get_presence = MagicMock(return_value=True)
-        mock_chassis.get_sfp = MagicMock(return_value=mock_sfp)
-        runner = CliRunner()
-        result = runner.invoke(sfputil.cli.commands['lpmode'].commands['show'], ["-p", "Ethernet0"])
-        assert result.exit_code == 0
-        expected_output = """Port       Low-power Mode
----------  ----------------
-Ethernet0  On
-"""
-        assert result.output == expected_output
-
-        mock_sfp.get_lpmode.return_value = False
-        result = runner.invoke(sfputil.cli.commands['lpmode'].commands['show'], ["-p", "Ethernet0"])
-        assert result.exit_code == 0
-        expected_output = """Port       Low-power Mode
----------  ----------------
-Ethernet0  Off
-"""
-        assert result.output == expected_output
-
-        mock_sfp.get_presence.return_value = False
-        result = runner.invoke(sfputil.cli.commands['lpmode'].commands['show'], ["-p", "Ethernet0"])
-        assert result.exit_code == 0
-        expected_output = """Port       Low-power Mode
----------  ----------------
-Ethernet0  Not Present
-"""
-        assert result.output == expected_output
-
-        mock_sfp.get_presence.return_value = True
-        mock_sfp.get_lpmode.return_value = False
-        mock_sfp.get_transceiver_info = MagicMock(return_value={'type': sfputil.RJ45_PORT_TYPE})
-        mock_chassis.get_port_or_cage_type = MagicMock(return_value=sfputil.SfpBase.SFP_PORT_TYPE_BIT_RJ45)
-        result = runner.invoke(sfputil.cli.commands['lpmode'].commands['show'], ["-p", "Ethernet0"])
-        assert result.exit_code == 0
-        expected_output = """Port       Low-power Mode
----------  ----------------
-Ethernet0  N/A
-"""
-        assert result.output == expected_output
 
     @patch('sfputil.main.platform_chassis')
     @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
@@ -1663,6 +1711,32 @@ EEPROM hexdump for port Ethernet4
         mock_time.side_effect = [0, 0, 61]
         status = sfputil.is_fw_switch_done("Ethernet0")
         assert status == expected
+
+    @patch('sfputil.main.time.time')
+    @patch('sfputil.main.time.sleep', MagicMock())
+    @patch('sfputil.main.platform_chassis')
+    @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
+    @pytest.mark.parametrize("mock_response, expected_output", [
+        # CmisApi contains CDB read errors as status False; the reason must
+        # reach the user rather than a bare timeout.
+        ({'status': False, 'info': 'CDB firmware info raised OSError: i2c timeout', 'result': None},
+         "FW switch : Timeout! Last error : CDB firmware info raised OSError: i2c timeout"),
+        # Module answered but never switched: nothing to add.
+        ({'status': True, 'info': 'Image A Version: 1.0.1\n',
+          'result': ("1.0.1", 1, 1, 0, "1.0.2", 0, 0, 0, "1.0.1", "1.0.2")},
+         "FW switch : Timeout!\n"),
+    ])
+    def test_is_fw_switch_done_timeout_reports_last_error(self, mock_chassis, mock_time, capsys,
+                                                          mock_response, expected_output):
+        mock_sfp = MagicMock()
+        mock_api = MagicMock()
+        mock_sfp.get_xcvr_api = MagicMock(return_value=mock_api)
+        mock_sfp.get_presence.return_value = True
+        mock_chassis.get_sfp = MagicMock(return_value=mock_sfp)
+        mock_api.get_module_fw_info.return_value = mock_response
+        mock_time.side_effect = [0, 0, 61]
+        assert sfputil.is_fw_switch_done("Ethernet0") == -1
+        assert expected_output in capsys.readouterr().out
 
     @patch('sfputil.main.platform_chassis')
     @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
