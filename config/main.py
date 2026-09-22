@@ -1205,14 +1205,26 @@ def _restart_services():
         if has_route_check:
             clicommon.run_command(['sudo', 'monit', 'monitor', 'routeCheck'])
         clicommon.run_command(['sudo', 'monit', 'monitor', 'container_checker'])
+<<<<<<< HEAD
         memory_services = _get_monit_services_by_prefix('container_memory_')
         for svc in memory_services:
+=======
+        memory_checkers = _get_monit_services_by_prefix('container_memory_')
+        for svc in memory_checkers:
+>>>>>>> 0b82a023 (NOS-14698: config reload: wait for container_memory monitors before monit reload (#980))
             clicommon.run_command(['sudo', 'monit', 'monitor', svc])
         log.log_notice("Waiting for monit monitor actions to complete ...")
         if has_route_check:
             _wait_for_monit_service_monitored('routeCheck')
         _wait_for_monit_service_monitored('container_checker')
+<<<<<<< HEAD
         for svc in memory_services:
+=======
+        # 'monit monitor' is asynchronous; the 'monit reload' below discards any
+        # still-pending monitor action and restores the unmonitored state from
+        # monit's state file, leaving these checks 'Not monitored' permanently.
+        for svc in memory_checkers:
+>>>>>>> 0b82a023 (NOS-14698: config reload: wait for container_memory monitors before monit reload (#980))
             _wait_for_monit_service_monitored(svc)
     except subprocess.CalledProcessError as err:
         pass
