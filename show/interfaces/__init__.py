@@ -1158,18 +1158,19 @@ def switchport_mode_config(db):
 
     portchannel_member_table = db.cfgdb.get_table('PORTCHANNEL_MEMBER')
 
-    for interface in port_data:
-        if clicommon.interface_is_in_portchannel(portchannel_member_table, interface):
-            port_data.remove(interface)
+    port_data = [interface for interface in port_data
+                 if not clicommon.interface_is_in_portchannel(portchannel_member_table, interface)]
 
     keys = port_data + portchannel_data
+
+    modes = clicommon.get_switchport_modes(db.cfgdb, keys)
 
     def tablelize(keys):
         table = []
 
         for key in natsorted(keys):
             r = [clicommon.get_interface_name_for_display(db, key),
-                 clicommon.get_interface_switchport_mode(db, key),
+                 modes[key],
                  clicommon.get_interface_untagged_vlan_members(db, key),
                  clicommon.get_interface_tagged_vlan_members(db, key)]
             table.append(r)
@@ -1190,18 +1191,19 @@ def switchport_mode_status(db):
 
     portchannel_member_table = db.cfgdb.get_table('PORTCHANNEL_MEMBER')
 
-    for interface in port_data:
-        if clicommon.interface_is_in_portchannel(portchannel_member_table, interface):
-            port_data.remove(interface)
+    port_data = [interface for interface in port_data
+                 if not clicommon.interface_is_in_portchannel(portchannel_member_table, interface)]
 
     keys = port_data + portchannel_data
+
+    modes = clicommon.get_switchport_modes(db.cfgdb, keys)
 
     def tablelize(keys):
         table = []
 
         for key in natsorted(keys):
             r = [clicommon.get_interface_name_for_display(db, key),
-                 clicommon.get_interface_switchport_mode(db, key)]
+                 modes[key]]
             table.append(r)
 
         return table

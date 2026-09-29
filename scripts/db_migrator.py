@@ -11,6 +11,14 @@ from sonic_py_common import device_info, logger
 from swsscommon.swsscommon import SonicV2Connector, ConfigDBConnector, SonicDBConfig
 from minigraph import parse_xml
 from utilities_common.helper import update_config
+<<<<<<< HEAD
+=======
+# Written by 'config reload' when it drops configuration this image has no
+# YANG model for. A migration needing an old value reads it from there,
+# because on a cold upgrade boot the field is gone from CONFIG_DB by now.
+from utilities_common.constants import CONFIG_DB_QUARANTINE_SUFFIX
+from utilities_common.router_interface_conflicts import find_router_interface_vlan_conflicts
+>>>>>>> 917270d3 (NOS-16717: derive the switchport mode instead of storing it (#1083))
 
 INIT_CFG_FILE = '/etc/sonic/init_cfg.json'
 MINIGRAPH_FILE = '/etc/sonic/minigraph.xml'
@@ -966,6 +974,263 @@ class DBMigrator():
                 log.log_info(f"Migrating STATE_DB {state_db_key}, ecn mode: {ecn_mode} -> copy_from_outer")
                 self.stateDB.set(self.stateDB.STATE_DB, state_db_key, 'ecn_mode', 'copy_from_outer')
 
+<<<<<<< HEAD
+=======
+    def config_file_path(self, suffix=''):
+        """The saved config file for this migrator's namespace."""
+        if not self.namespace:
+            return CONFIG_DB_FILE + suffix
+        asic_id = self.namespace[len(NAMESPACE_PREFIX):]
+        root, ext = os.path.splitext(CONFIG_DB_FILE)
+        return '{}{}{}{}'.format(root, asic_id, ext, suffix)
+
+    def read_config_file(self, path):
+        """Load a ConfigDB-shaped file, unwrapping the host scope if present."""
+        if not os.path.isfile(path):
+            return {}
+        try:
+            with open(path) as f:
+                config = json.load(f)
+        except Exception as e:
+            log.log_error('Failed to read {}: {}'.format(path, str(e)))
+            return {}
+        if not isinstance(config, dict):
+            return {}
+        # Multi-asic files are keyed by scope; a namespaced migrator was already
+        # handed its own file, so only the host scope needs unwrapping.
+        if not self.namespace and HOST_NAMESPACE in config:
+            host = config.get(HOST_NAMESPACE)
+            return host if isinstance(host, dict) else {}
+        return config
+
+    def quarantine_config(self):
+        """
+        Load the configuration 'config reload' dropped because this image's
+        YANG models reject it, for this migrator's namespace. Returns an empty dict when
+        there is none, which is the normal case.
+        """
+        return self.read_config_file(
+            self.config_file_path(CONFIG_DB_QUARANTINE_SUFFIX))
+
+    def saved_config(self):
+        """
+        The config file on disk, which is where a value somebody chose lives.
+
+        CONFIG_DB is no substitute: 'config reload' loads this image's init_cfg
+        into it before db_migrator runs, so an entry there may be nothing more
+        than the image default.
+        """
+        return self.read_config_file(self.config_file_path())
+
+    def migrate_remove_switchport_mode(self):
+        """
+        Drop the mode field from PORT and PORTCHANNEL rows. Nothing reads it: the
+        switchport mode is derived from VLAN membership.
+        """
+        for table in ("PORT", "PORTCHANNEL"):
+            try:
+                entries = self.configDB.get_table(table)
+            except Exception as e:
+                log.log_error(f"Failed to read {table} table: {str(e)}")
+                continue
+
+            for name, data in entries.items():
+                if "mode" not in data:
+                    continue
+                mode = data["mode"]
+                updated = {field: value for field, value in data.items() if field != "mode"}
+                try:
+                    self.configDB.set_entry(table, name, updated)
+                    log.log_notice(f"Removed mode {mode} from {table} {name}")
+                except Exception as e:
+                    log.log_error(f"Failed to remove mode from {table} {name}: {str(e)}")
+
+    def migrate_router_interface_vlan_conflicts(self):
+        """
+        Drop one side of each port or PortChannel that is both a VLAN member and
+        a router interface, which the models reject but older images could
+        save. find_router_interface_vlan_conflicts decides which side goes.
+
+        This covers what reached CONFIG_DB without the split in 'config reload':
+        a warm upgrade, which loads CONFIG_DB as it was, and any reload on a
+        branch that has no such split. The saved config file is left alone: it
+        still holds what was dropped until the next save.
+        """
+        tables = {}
+        for table in ('VLAN_MEMBER', 'INTERFACE', 'PORTCHANNEL_INTERFACE'):
+            try:
+                tables[table] = self.configDB.get_table(table)
+            except Exception as e:
+                log.log_error(f"Failed to read {table} table: {str(e)}")
+                return
+
+        for table, keys in find_router_interface_vlan_conflicts(tables).items():
+            for key in keys:
+                name = '|'.join(key) if isinstance(key, tuple) else key
+                try:
+                    self.configDB.set_entry(table, key, None)
+                    log.log_warning(f"Removed {table}|{name} {tables[table][key]}: its port was both a "
+                                    f"VLAN member and a router interface")
+                except Exception as e:
+                    log.log_error(f"Failed to remove {table}|{name}: {str(e)}")
+
+    def migrate_route_performance_knobs(self):
+        """
+        Move the route performance knobs out of DEVICE_METADATA|localhost.
+
+        The four DEVICE_METADATA leaves were removed in the
+        sonic-device_metadata 2026-06-02 revision and replaced by the
+        SYSTEM_DEFAULTS entries swss_zmq and async_rec. swss_zmq covers both
+        the northbound and the southbound path, so the two ZMQ knobs collapse
+        into one that stays enabled only if every knob present was true. A
+        202511 source carries only the northbound knob, since southbound ZMQ
+        does not exist there, and its value then stands on its own.
+
+        async_rec comes from async_swss_rec alone. route_state_async_publish
+        was removed alongside it but nothing ever read it from CONFIG_DB, since
+        orchagent derives gRouteStateAsyncPublish from -A, so folding it in
+        could only switch off a recorder somebody had on.
+
+        The two groups do not share a value vocabulary: the ZMQ leaves are YANG
+        booleans and async_swss_rec is an enabled/disabled enumeration.
+
+        On a cold upgrade boot 'config reload' has already stripped the fields
+        from the config file, so the old values come from the quarantine file.
+        On a warm boot no reload runs and they are still in CONFIG_DB.
+
+        That same reload loads this image's init_cfg before the config file,
+        and init_cfg seeds both SYSTEM_DEFAULTS entries, so an entry is always
+        present in CONFIG_DB by the time this runs and cannot be used to tell
+        an image default from somebody's choice. The saved config file can:
+        an entry there was written by an operator running 'config save', so it
+        is left alone, and anything else is replaced.
+
+        This handler is terminal and re-runs every boot, so the replacement
+        keeps reapplying until the value is saved, which is how SONiC expects
+        a migration to behave. Comparing against init_cfg instead would make
+        an operator value that happens to equal the image default impossible
+        to keep.
+        """
+        zmq_fields = ('orch_northbond_route_zmq_enabled', 'orch_southbound_zmq_enabled')
+        async_rec_fields = ('async_swss_rec',)
+        # Removed with the rest, collected only so it is cleared out of
+        # DEVICE_METADATA. It feeds no SYSTEM_DEFAULTS entry.
+        unread_fields = ('route_state_async_publish',)
+
+        metadata = self.configDB.get_entry('DEVICE_METADATA', 'localhost')
+        quarantined = self.quarantine_config().get('DEVICE_METADATA', {}).get('localhost', {})
+
+        old_values = {}
+        for field in zmq_fields + async_rec_fields + unread_fields:
+            if field in metadata:
+                old_values[field] = metadata[field]
+            elif field in quarantined:
+                old_values[field] = quarantined[field]
+        if not old_values:
+            return
+
+        chosen = self.saved_config().get('SYSTEM_DEFAULTS', {})
+        if not isinstance(chosen, dict):
+            chosen = {}
+        migrated = {}
+
+        for name, fields in (('swss_zmq', zmq_fields), ('async_rec', async_rec_fields)):
+            values = [old_values[f] for f in fields if f in old_values]
+            if not values:
+                continue
+            if name in chosen:
+                log.log_notice('SYSTEM_DEFAULTS|{} is set in the saved config, '
+                               'not overriding'.format(name))
+                continue
+            current = self.configDB.get_entry('SYSTEM_DEFAULTS', name)
+            # AND over the knobs actually present, and off is the safer
+            # collapse. An absent knob is not taken as its model default: on
+            # 202511 southbound ZMQ does not exist at all, so defaulting it to
+            # false there would switch off a northbound path that was on.
+            # 'true' for the boolean leaves, 'enabled' for the enum one.
+            status = ('enabled'
+                      if all(str(v).lower() in ('true', 'enabled') for v in values)
+                      else 'disabled')
+            if current == {'status': status}:
+                continue
+            self.configDB.set_entry('SYSTEM_DEFAULTS', name, {'status': status})
+            migrated[name] = status
+
+        removed = [f for f in old_values if f in metadata]
+        if removed:
+            for field in removed:
+                del metadata[field]
+            self.configDB.set_entry('DEVICE_METADATA', 'localhost', metadata)
+
+        # This handler is terminal and runs every boot, so stay quiet unless
+        # something actually changed.
+        if migrated or removed:
+            # Reported separately: not every field collected has a
+            # SYSTEM_DEFAULTS destination, route_state_async_publish least of all.
+            log.log_notice(
+                'Route performance knobs: cleared {} from DEVICE_METADATA, set {}'.format(
+                    ', '.join(sorted(removed)) or 'nothing',
+                    ', '.join('SYSTEM_DEFAULTS|{}={}'.format(k, v)
+                              for k, v in sorted(migrated.items())) or 'nothing'))
+
+    def _drop_bgp_peer_type_from_config_file(self, table, file_key):
+        """
+        Mirror a peer_type drop onto the saved /etc/sonic/config_db.json.
+
+        A plain 'config reload' YANG-validates that file (config_file_yang_validation()
+        in config/main.py) before db_migrator ever runs, so a row this migration
+        hasn't also fixed on disk aborts the reload on the new asn/peer_type
+        mutual-exclusivity constraint every time -- fixing CONFIG_DB alone
+        doesn't help, since the very next reload reads the file again.
+        """
+        if not os.path.exists(CONFIG_DB_FILE):
+            return
+        try:
+            with open(CONFIG_DB_FILE) as f:
+                file_cfg = json.load(f)
+        except Exception as e:
+            log.log_error("Failed to read {}: {}".format(CONFIG_DB_FILE, str(e)))
+            return
+        row = file_cfg.get(table, {}).get(file_key)
+        if row and 'peer_type' in row and 'asn' in row:
+            del row['peer_type']
+            try:
+                with open(CONFIG_DB_FILE, 'w') as f:
+                    json.dump(file_cfg, f, indent=4)
+            except Exception as e:
+                log.log_error("Failed to write {}: {}".format(CONFIG_DB_FILE, str(e)))
+
+    def migrate_bgp_neighbor_peer_type_asn_conflict(self):
+        """
+        asn and peer_type on a BGP_NEIGHBOR/BGP_PEER_GROUP row are mutually
+        exclusive -- both feed FRR's single-valued 'neighbor remote-as'
+        command. A row carrying both is left over from before that
+        constraint existed and won't validate going forward, so one of the
+        two has to go. asn is kept because it is the value an operator
+        typed explicitly; peer_type ('internal'/'external') is a looser,
+        dynamic-AS declaration.
+
+        This is not guaranteed to preserve the live session's remote-as:
+        frrcfgd's incremental path prefers asn, but the bgpd.conf template
+        (rendered on every bgp container start) prefers peer_type, so which
+        one was actually driving a given session depends on the box's
+        history. See the per-row warning below.
+        """
+        for table in ('BGP_NEIGHBOR', 'BGP_PEER_GROUP'):
+            for key, fields in self.configDB.get_table(table).items():
+                if not isinstance(key, tuple) or len(key) != 2:
+                    continue
+                if 'asn' in fields and 'peer_type' in fields:
+                    log.log_warning(
+                        "{}|{}: dropped peer_type '{}', kept asn '{}' -- verify "
+                        "this neighbor's remote-as after this boot.".format(
+                            table, '|'.join(key), fields['peer_type'], fields['asn']))
+                    updated = fields.copy()
+                    del updated['peer_type']
+                    self.configDB.set_entry(table, key, updated)
+                    self._drop_bgp_peer_type_from_config_file(table, '|'.join(key))
+
+>>>>>>> 917270d3 (NOS-16717: derive the switchport mode instead of storing it (#1083))
     def version_unknown(self):
         """
         version_unknown tracks all SONiC versions that doesn't have a version
@@ -1436,8 +1701,27 @@ class DBMigrator():
     def version_202605_01(self):
         """
         Version 202605_01
+<<<<<<< HEAD
         """
         log.log_info('Handling version_202605_01')
+=======
+
+        Terminal handler, so this runs on every boot and
+        migrate_route_performance_knobs, migrate_bgp_neighbor_peer_type_asn_conflict,
+        migrate_remove_switchport_mode and migrate_router_interface_vlan_conflicts
+        have to stay idempotent.
+
+        No version bump, because there is nothing to gain from one. The stamp
+        only reaches disk through 'config save', so a bumped chain would keep
+        re-running until saved exactly as this does, and leaving it alone keeps
+        master and 202605 on the same stamp.
+        """
+        log.log_info('Handling version_202605_01')
+        self.migrate_route_performance_knobs()
+        self.migrate_bgp_neighbor_peer_type_asn_conflict()
+        self.migrate_remove_switchport_mode()
+        self.migrate_router_interface_vlan_conflicts()
+>>>>>>> 917270d3 (NOS-16717: derive the switchport mode instead of storing it (#1083))
         return None
 
     def get_version(self):

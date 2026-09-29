@@ -217,8 +217,6 @@
 * [Subinterfaces](#subinterfaces)
   * [Subinterfaces Show Commands](#subinterfaces-show-commands)
   * [Subinterfaces Config Commands](#subinterfaces-config-commands)
-  * [Switchport Modes](#switchport-modes)
-  * [Switchport Modes Config Commands](#switchportmodes-config-commands)
 * [Syslog](#syslog)
   * [Syslog show commands](#syslog-show-commands)
   * [Syslog config commands](#syslog-config-commands)
@@ -7874,8 +7872,10 @@ This command displays switchport modes configuration of the interfaces
   ```
 
 
-For details please refer [Switchport Mode HLD](https://github.com/sonic-net/SONiC/pull/912/files#diff-03597c34684d527192f76a6e975792fcfc83f54e20dde63f159399232d148397) to know more about th
-is command.
+The mode is derived from VLAN membership, not set directly. A port or PortChannel with no VLAN
+membership is `routed`. One with exactly one untagged VLAN membership is `access`,
+and any other combination of memberships is `trunk`. Use `config vlan member add/del` to change it.
+A router interface cannot be a VLAN member, so it is always `routed`.
 
 
 
@@ -8509,6 +8509,7 @@ For details please refer [dynamic buffer management](#dynamic-buffer-management)
 
 This command is used for adding MPLS operation on the interface.
 MPLS operation for either physical, portchannel, or VLAN interface can be configured using this command.
+It is refused for a physical or portchannel interface that is a VLAN member, since MPLS applies to routed interfaces.
 
 
 - Usage:
@@ -8553,6 +8554,7 @@ MPLS operation for either physical, portchannel, or VLAN interface can be config
 This command is used for setting the action being taken on packets that ingress and get routed on the same IP interface.
 Loopback action can be set on IP interface from type physical, portchannel, VLAN interface and VLAN subinterface.
 Loopback action can be drop or forward.
+It is refused for a physical or portchannel interface that is a VLAN member, since loopback action applies to routed interfaces.
 
 - Usage:
   ```
@@ -14144,30 +14146,6 @@ This command is used to delete a subinterface.
   ```
 
 Go Back To [Beginning of the document](#) or [Beginning of this section](#subinterfaces)
-
-
-## Switchport Modes
-### Switchport Modes Config Commands
-This subsection explains how to configure switchport modes on a Port/PortChannel.
-**config switchport mode **
-Usage:
-  ```
-  config switchport mode <access|trunk|routed> <member_portname/member_portchannel>
-  ```
-- Example (Config switchport mode access on "Ethernet0):
-  ```
-  admin@sonic:~$ sudo config switchport mode access Ethernet0
-  ```
-- Example (Config switchport mode trunk on "Ethernet4"):
-  ```
-  admin@sonic:~$ sudo config switchport mode trunk Ethernet4
-  ```
-- Example (Config switchport mode routed on "Ethernet12"):
-  ```
-  admin@sonic:~$ sudo config switchport mode routed Ethernet12
-  `
-``
-Go Back To [Beginning of the document](#) or [Beginning of this section](#switchport-modes)
 
 
 ## Syslog

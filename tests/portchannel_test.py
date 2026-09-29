@@ -214,7 +214,85 @@ class TestPortChannel(object):
         print(result.exit_code)
         print(result.output)
         assert result.exit_code != 0
+<<<<<<< HEAD
         assert "Error:  Ethernet0 has ip address configured" in result.output
+=======
+        assert "Error: Ethernet0 is a routed port" in result.output
+
+    def test_add_portchannel_member_which_has_ip_and_vrf(self):
+        runner = CliRunner()
+        db = Db()
+        obj = {'db': db.cfgdb}
+
+        # Case 1: interface moved to a VRF and lost its IP. Ethernet40 has an
+        # interface-level row with a VRF binding and no address tuple row. Must
+        # be rejected as a routed port.
+        # Ethernet40 has an INTERFACE entry (ipv6_use_link_local_only).
+        # Temporarily add VRF binding to test the VRF (no IP) case.
+        original_entry = db.cfgdb.get_entry('INTERFACE', 'Ethernet40')
+        db.cfgdb.set_entry('INTERFACE', 'Ethernet40', {'vrf_name': 'Vrf_test', 'ipv6_use_link_local_only': 'enable'})
+
+        # Should fail with "is a routed port" message
+        result = runner.invoke(config.config.commands["portchannel"].commands["member"].commands["add"],
+                               ["PortChannel1001", "Ethernet40"], obj=obj)
+        print(result.exit_code)
+        print(result.output)
+
+        # Restore original config
+        db.cfgdb.set_entry('INTERFACE', 'Ethernet40', original_entry)
+
+        assert result.exit_code != 0
+        assert "Error: Ethernet40 is a routed port" in result.output
+
+    def test_add_portchannel_member_address_row_only(self):
+        runner = CliRunner()
+        db = Db()
+        obj = {'db': db.cfgdb}
+
+        # Case 3: GCU patch added an address row but NOT the interface-level row.
+        # Ethernet64 is a clean port (no interface-level INTERFACE row). Inject only
+        # an address tuple row, mirroring a GCU patch that added an IP without the
+        # interface row itself. The member-add check must still reject it as a routed
+        # port, since the INTERFACE table is keyed by both string and tuple keys.
+        db.cfgdb.set_entry('INTERFACE', ('Ethernet64', '10.0.0.1/31'), {'NULL': 'NULL'})
+
+        result = runner.invoke(config.config.commands["portchannel"].commands["member"].commands["add"],
+                               ["PortChannel1001", "Ethernet64"], obj=obj)
+        print(result.exit_code)
+        print(result.output)
+
+        # Restore original config
+        db.cfgdb.set_entry('INTERFACE', ('Ethernet64', '10.0.0.1/31'), None)
+
+        assert result.exit_code != 0
+        assert "Error: Ethernet64 is a routed port" in result.output
+
+    def test_add_portchannel_member_switchport_success(self):
+        runner = CliRunner()
+        db = Db()
+        obj = {'db': db.cfgdb, 'db_wrap': db, 'namespace': ''}
+
+        # Ethernet52: free port with TPID=0x8100 (same as existing PC members)
+        # Not in INTERFACE, VLAN, PortChannel, or subinterfaces - should be addable
+        result = runner.invoke(config.config.commands["portchannel"].commands["member"].commands["add"],
+                               ["PortChannel1001", "Ethernet52"], obj=obj)
+        print(result.exit_code)
+        print(result.output)
+        assert result.exit_code == 0
+
+        # Verify it was added
+        assert db.cfgdb.get_entry('PORTCHANNEL_MEMBER', ('PortChannel1001', 'Ethernet52')) is not None
+
+        # Remove it to restore original config
+        result = runner.invoke(config.config.commands["portchannel"].commands["member"].commands["del"],
+                               ["PortChannel1001", "Ethernet52"], obj=obj)
+        print(result.exit_code)
+        print(result.output)
+        assert result.exit_code == 0
+
+        # Verify it was removed - config should be back to original state
+        assert db.cfgdb.get_entry('PORTCHANNEL_MEMBER', ('PortChannel1001', 'Ethernet52')) == {}
+>>>>>>> 917270d3 (NOS-16717: derive the switchport mode instead of storing it (#1083))
 
     def test_add_portchannel_member_which_has_subintf(self):
         runner = CliRunner()

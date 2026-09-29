@@ -111,7 +111,7 @@ class TestMpls(object):
         assert result.exit_code == 0
         assert db.cfgdb.get_entry("INTERFACE", "Ethernet0") == {"mpls": "enable"}
 
-    def test_config_mpls_invalid_interface_add(self):
+    def test_config_mpls_add_refuses_vlan_member(self):
         runner = CliRunner()
         db = Db()
         obj = {'config_db':db.cfgdb}
@@ -122,7 +122,34 @@ class TestMpls(object):
                  )
         print(result.exit_code)
         print(result.output)
+        assert result.exit_code != 0
+        assert "Ethernet8 is a VLAN member" in result.output
+        assert db.cfgdb.get_entry("INTERFACE", "Ethernet8") == {}
+
+    @mock.patch("validated_config_db_connector.device_info.is_yang_config_validation_enabled",
+                mock.Mock(return_value=True))
+    @mock.patch("config.validated_config_db_connector.ValidatedConfigDBConnector.validated_mod_entry")
+    def test_config_mpls_add_yang_validation(self, validated_mod_entry):
+        runner = CliRunner()
+        db = Db()
+        obj = {'config_db':db.cfgdb}
+
+        result = runner.invoke(
+                 config.config.commands["interface"].commands["mpls"].commands["add"],
+                 ["Ethernet0"], obj=obj
+                 )
+        print(result.exit_code)
+        print(result.output)
         assert result.exit_code == 0
+        validated_mod_entry.assert_called_once_with("INTERFACE", "Ethernet0", {"mpls": "enable"})
+
+        validated_mod_entry.side_effect = ValueError("rejected")
+        result = runner.invoke(
+                 config.config.commands["interface"].commands["mpls"].commands["add"],
+                 ["Ethernet0"], obj=obj
+                 )
+        assert result.exit_code != 0
+        assert "Invalid ConfigDB. Error: rejected" in result.output
 
 
     def test_show_interfaces_mpls_frontend(self):
@@ -191,7 +218,7 @@ class TestMpls(object):
         assert result.exit_code == 0
         assert db.cfgdb.get_entry("INTERFACE", "Ethernet0") == {"mpls": "disable"}
 
-    def test_config_mpls_invalid_interface_remove(self):
+    def test_config_mpls_remove_refuses_vlan_member(self):
         runner = CliRunner()
         db = Db()
         obj = {'config_db':db.cfgdb}
@@ -202,7 +229,34 @@ class TestMpls(object):
                  )
         print(result.exit_code)
         print(result.output)
+        assert result.exit_code != 0
+        assert "Ethernet8 is a VLAN member" in result.output
+        assert db.cfgdb.get_entry("INTERFACE", "Ethernet8") == {}
+
+    @mock.patch("validated_config_db_connector.device_info.is_yang_config_validation_enabled",
+                mock.Mock(return_value=True))
+    @mock.patch("config.validated_config_db_connector.ValidatedConfigDBConnector.validated_mod_entry")
+    def test_config_mpls_remove_yang_validation(self, validated_mod_entry):
+        runner = CliRunner()
+        db = Db()
+        obj = {'config_db':db.cfgdb}
+
+        result = runner.invoke(
+                 config.config.commands["interface"].commands["mpls"].commands["remove"],
+                 ["Ethernet0"], obj=obj
+                 )
+        print(result.exit_code)
+        print(result.output)
         assert result.exit_code == 0
+        validated_mod_entry.assert_called_once_with("INTERFACE", "Ethernet0", {"mpls": "disable"})
+
+        validated_mod_entry.side_effect = ValueError("rejected")
+        result = runner.invoke(
+                 config.config.commands["interface"].commands["mpls"].commands["remove"],
+                 ["Ethernet0"], obj=obj
+                 )
+        assert result.exit_code != 0
+        assert "Invalid ConfigDB. Error: rejected" in result.output
 
 
     @classmethod 
@@ -235,8 +289,7 @@ class TestMplsMasic(object):
         assert result.exit_code == 0
         assert db.cfgdb.get_entry("INTERFACE", "Ethernet0") == {"mpls": "enable"}
 
-
-    def test_config_mpls_masic_invalid_interface_add(self):
+    def test_config_mpls_masic_add_refuses_vlan_member(self):
         runner = CliRunner()
         db = Db()
         obj = {'config_db':db.cfgdb, 'namespace':'asic0'}
@@ -247,7 +300,9 @@ class TestMplsMasic(object):
                  )
         print(result.exit_code)
         print(result.output)
-        assert result.exit_code == 0
+        assert result.exit_code != 0
+        assert "Ethernet8 is a VLAN member" in result.output
+        assert db.cfgdb.get_entry("INTERFACE", "Ethernet8") == {}
 
 
     def test_show_interfaces_mpls_masic_frontend(self):
@@ -326,7 +381,7 @@ class TestMplsMasic(object):
         assert result.exit_code == 0
         assert db.cfgdb.get_entry("INTERFACE", "Ethernet0") == {"mpls": "disable"}
 
-    def test_config_mpls_masic_invalid_interface_remove(self):
+    def test_config_mpls_masic_remove_refuses_vlan_member(self):
         runner = CliRunner()
         db = Db()
         obj = {'config_db':db.cfgdb, 'namespace':'asic0'}
@@ -337,7 +392,9 @@ class TestMplsMasic(object):
                  )
         print(result.exit_code)
         print(result.output)
-        assert result.exit_code == 0
+        assert result.exit_code != 0
+        assert "Ethernet8 is a VLAN member" in result.output
+        assert db.cfgdb.get_entry("INTERFACE", "Ethernet8") == {}
 
     @classmethod
     def teardown_class(cls):

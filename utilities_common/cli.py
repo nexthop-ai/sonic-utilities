@@ -410,17 +410,6 @@ def vlan_member_input_parser(ctx, command_mode, db, except_flag, multiple, vid, 
     return vid_list
 
 
-def interface_is_tagged_member(db, interface_name):
-    """ Check if interface has tagged members i.e. is in trunk mode"""
-    vlan_member_table = db.get_table('VLAN_MEMBER')
-
-    for key, val in vlan_member_table.items():
-        if (key[1] == interface_name):
-            if (val['tagging_mode'] == 'tagged'):
-                return True
-    return False
-
-
 def interface_is_in_vlan(vlan_member_table, interface_name):
     """ Check if an interface is in a vlan """
     for _, intf in vlan_member_table:
@@ -454,26 +443,22 @@ def is_vxlan_tunnel_exists(config_db, vxlan_tunnel_name):
     return False
 
 
+def get_router_interface_names(config_db, table):
+    names = set()
+    for key in config_db.get_table(table):
+        # Address rows are keyed (name, prefix), and a port may have only those.
+        names.add(key[0] if isinstance(key, tuple) else key)
+    return names
+
+
 def is_port_router_interface(config_db, port):
     """Check if port is a router interface"""
-
-    interface_table = config_db.get_table('INTERFACE')
-    for intf in interface_table:
-        if port == intf:
-            return True
-
-    return False
+    return port in get_router_interface_names(config_db, 'INTERFACE')
 
 
 def is_pc_router_interface(config_db, pc):
     """Check if portchannel is a router interface"""
-
-    pc_interface_table = config_db.get_table('PORTCHANNEL_INTERFACE')
-    for intf in pc_interface_table:
-        if pc == intf:
-            return True
-
-    return False
+    return pc in get_router_interface_names(config_db, 'PORTCHANNEL_INTERFACE')
 
 
 def get_vlan_id(vlan):
@@ -510,7 +495,7 @@ def get_interface_tagged_vlan_members(db, interface):
     for member in natsorted(list(vlan_member.keys())):
         interface_vlan, interface_name = member
 
-        if interface == interface_name and vlan_member[member]['tagging_mode'] == 'tagged':
+        if interface == interface_name and vlan_member[member]['tagging_mode'] in ('tagged', 'priority_tagged'):
             tagged_vlans.append(get_vlan_id(interface_vlan))
 
     for i in range(len(tagged_vlans)//5+1):
@@ -519,23 +504,26 @@ def get_interface_tagged_vlan_members(db, interface):
     return "\n".join(formatted_tagged_vlans)
 
 
-def get_interface_switchport_mode(db, interface):
-    port = db.cfgdb.get_entry('PORT', interface)
-    portchannel = db.cfgdb.get_entry('PORTCHANNEL', interface)
-    vlan_member_table = db.cfgdb.get_table('VLAN_MEMBER')
+def get_switchport_modes(config_db, names):
+    """Map each of names to 'routed', 'access' or 'trunk'.
 
-    vlan_member_keys = []
-    for _, key in vlan_member_table:
-        vlan_member_keys.append(key)
+    Exactly one untagged VLAN membership makes it access, any other membership
+    trunk, and none routed.
+    """
+    tagging_by_name = {}
+    for (_, member), entry in config_db.get_table('VLAN_MEMBER').items():
+        tagging_by_name.setdefault(member, []).append(entry.get('tagging_mode', 'untagged'))
 
-    switchport_mode = 'routed'
-    if "mode" in port:
-        switchport_mode = port['mode']
-    elif "mode" in portchannel:
-        switchport_mode = portchannel['mode']
-    elif interface in vlan_member_keys:
-        switchport_mode = 'trunk'
-    return switchport_mode
+    modes = {}
+    for name in names:
+        tagging_modes = tagging_by_name.get(name, [])
+        if not tagging_modes:
+            modes[name] = 'routed'
+        elif tagging_modes == ['untagged']:
+            modes[name] = 'access'
+        else:
+            modes[name] = 'trunk'
+    return modes
 
 
 def is_port_mirror_dst_port(config_db, port):

@@ -118,6 +118,18 @@ class TestLoopbackAction(object):
         print(result.exit_code, result.output)
         assert result.exit_code == 0
         
+    def test_config_loopback_action_refuses_vlan_member(self):
+        runner = CliRunner()
+        db = Db()
+        obj = {'config_db':db.cfgdb}
+
+        result = runner.invoke(config.config.commands['interface'].commands["ip"].commands['loopback-action'], ['Ethernet8', 'drop'], obj=obj)
+
+        print(result.exit_code, result.output)
+        assert result.exit_code != 0
+        assert "Ethernet8 is a VLAN member" in result.output
+        assert db.cfgdb.get_entry("INTERFACE", "Ethernet8") == {}
+
     def test_config_loopback_action_invalid_action(self):        
         runner = CliRunner()
         db = Db()

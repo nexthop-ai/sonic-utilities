@@ -383,22 +383,6 @@ def add_vlan_member(ctx, vid, port, untagged, multiple, except_flag):
             if (clicommon.interface_is_untagged_member(
                     db.cfgdb, port) and untagged):  # TODO: MISSING CONSTRAINT IN YANG MODEL
                 ctx.fail("{} is already untagged member!".format(port))
-            # checking mode status of port if its access, trunk or routed
-            if is_port:
-                port_data = db.cfgdb.get_entry('PORT', port)
-            # if not port then is a port channel
-            elif not is_port:
-                port_data = db.cfgdb.get_entry('PORTCHANNEL', port)
-            existing_mode = None
-            if "mode" in port_data:
-                existing_mode = port_data["mode"]
-            if existing_mode == "routed":
-                ctx.fail("{} is in routed mode!\nUse switchport mode command to change port mode".format(port))
-            mode_type = "access" if untagged else "trunk"
-            if existing_mode == "access" and mode_type == "trunk":  # TODO: MISSING CONSTRAINT IN YANG MODEL
-                ctx.fail("{} is in access mode! Tagged Members cannot be added".format(port))
-            elif existing_mode == mode_type or (existing_mode == "trunk" and mode_type == "access"):
-                pass
 
             # If port is being made L2 port, enable STP
             enable_stp_on_port(db.cfgdb, port)

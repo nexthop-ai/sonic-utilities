@@ -1149,3 +1149,481 @@ class TestIPinIPTunnelEcnModeMigrator(object):
         expected_state_db = SonicV2Connector(host='127.0.0.1')
         expected_state_db.connect(expected_state_db.STATE_DB)
         self.compare_keys(expected_state_db, dbmgtr.stateDB, 'STATE_DB')
+<<<<<<< HEAD
+=======
+
+
+class TestRoutePerformanceKnobsMigrator(object):
+    """
+    The four DEVICE_METADATA route performance knobs were removed in the
+    sonic-device_metadata 2026-06-02 revision and replaced by the
+    SYSTEM_DEFAULTS entries swss_zmq and async_rec.
+    """
+
+    @classmethod
+    def setup_class(cls):
+        cls.saved_version_info = device_info.get_sonic_version_info
+        device_info.get_sonic_version_info = get_sonic_version_info_broadcom
+
+    @classmethod
+    def teardown_class(cls):
+        device_info.get_sonic_version_info = cls.saved_version_info
+        dbconnector.dedicated_dbs.clear()
+
+    def setup_method(self):
+        self.patchers = []
+
+    def teardown_method(self):
+        # Stop only the patches this test started, rather than every patch
+        # active in the process.
+        while self.patchers:
+            self.patchers.pop().stop()
+
+    def compare_tables(self, dbmgtr, expected_fixture):
+        dbconnector.dedicated_dbs['CONFIG_DB'] = os.path.join(
+            mock_db_path, 'config_db', expected_fixture)
+        expected_db = Db()
+        for table in ('DEVICE_METADATA', 'SYSTEM_DEFAULTS'):
+            diff = DeepDiff(dbmgtr.configDB.get_table(table),
+                            expected_db.cfgdb.get_table(table),
+                            ignore_order=True)
+            assert not diff, "{} mismatch: {}".format(table, diff)
+
+    def patch(self, target, attribute, value):
+        patcher = mock.patch.object(target, attribute, value)
+        patcher.start()
+        self.patchers.append(patcher)
+
+    def migrator(self, input_fixture, quarantine=None, tmp_path=None,
+                 saved_config=None):
+        dbconnector.dedicated_dbs['CONFIG_DB'] = os.path.join(
+            mock_db_path, 'config_db', input_fixture)
+        import db_migrator
+        if quarantine is not None or saved_config is not None:
+            config_db_file = os.path.join(str(tmp_path), 'config_db.json')
+            if saved_config is not None:
+                with open(config_db_file, 'w') as f:
+                    json.dump(saved_config, f)
+            if quarantine is not None:
+                with open(config_db_file + db_migrator.CONFIG_DB_QUARANTINE_SUFFIX, 'w') as f:
+                    json.dump(quarantine, f)
+            self.patch(db_migrator, 'CONFIG_DB_FILE', config_db_file)
+        return db_migrator.DBMigrator(None)
+
+    def test_knobs_enabled_move_to_system_defaults(self):
+        dbmgtr = self.migrator('route_perf_knobs_input')
+        dbmgtr.migrate_route_performance_knobs()
+        self.compare_tables(dbmgtr, 'route_perf_knobs_expected')
+
+    def test_disabled_knob_collapses_to_disabled(self):
+        dbmgtr = self.migrator('route_perf_knobs_disabled_input')
+        dbmgtr.migrate_route_performance_knobs()
+        self.compare_tables(dbmgtr, 'route_perf_knobs_disabled_expected')
+
+    def test_entry_in_the_saved_config_wins(self, tmp_path):
+        saved = {'SYSTEM_DEFAULTS': {'swss_zmq': {'status': 'enabled'}}}
+        dbmgtr = self.migrator('route_perf_knobs_operator_set_input',
+                               saved_config=saved, tmp_path=tmp_path)
+        dbmgtr.migrate_route_performance_knobs()
+        self.compare_tables(dbmgtr, 'route_perf_knobs_operator_set_expected')
+
+    def test_value_read_from_quarantine_file(self, tmp_path):
+        # Cold upgrade boot: 'config reload' already stripped the field from
+        # CONFIG_DB, so the old value only exists in the quarantine file.
+        quarantine = {
+            'DEVICE_METADATA': {
+                'localhost': {'orch_northbond_route_zmq_enabled': 'false'}
+            }
+        }
+        dbmgtr = self.migrator('route_perf_knobs_quarantine_input',
+                               quarantine=quarantine, tmp_path=tmp_path)
+        dbmgtr.migrate_route_performance_knobs()
+        self.compare_tables(dbmgtr, 'route_perf_knobs_quarantine_expected')
+
+    def test_image_default_in_configdb_does_not_block_the_migration(self, tmp_path):
+        # config reload loads init_cfg before the config file, so an entry is
+        # always in CONFIG_DB by the time this runs. Absent from the saved
+        # config, it is only the image default and must not win.
+        dbmgtr = self.migrator('route_perf_knobs_operator_set_input',
+                               saved_config={}, tmp_path=tmp_path)
+        dbmgtr.migrate_route_performance_knobs()
+        assert dbmgtr.configDB.get_entry('SYSTEM_DEFAULTS', 'swss_zmq') == \
+            {'status': 'disabled'}
+        assert 'orch_northbond_route_zmq_enabled' not in \
+            dbmgtr.configDB.get_entry('DEVICE_METADATA', 'localhost')
+
+    def test_saved_value_equal_to_the_image_default_still_wins(self, tmp_path):
+        # The case that decides this cannot be judged from CONFIG_DB: somebody
+        # chose the value the image also defaults to. Saved, so it stands, and
+        # the every-boot re-run must not keep reverting it.
+        saved = {'SYSTEM_DEFAULTS': {'swss_zmq': {'status': 'enabled'}}}
+        quarantine = {
+            'DEVICE_METADATA': {
+                'localhost': {'orch_northbond_route_zmq_enabled': 'false'}
+            }
+        }
+        # CONFIG_DB carries the saved value, as it would after a reload.
+        dbmgtr = self.migrator('route_perf_knobs_operator_set_input',
+                               quarantine=quarantine, saved_config=saved,
+                               tmp_path=tmp_path)
+        dbmgtr.migrate_route_performance_knobs()
+        dbmgtr.migrate_route_performance_knobs()
+        assert dbmgtr.configDB.get_entry('SYSTEM_DEFAULTS', 'swss_zmq') == \
+            {'status': 'enabled'}
+
+    def test_northbound_only_source_migrates_on_its_own(self, tmp_path):
+        # 202511 has no southbound ZMQ at all, so a config carried from there
+        # has only the northbound knob and its value stands alone.
+        quarantine = {
+            'DEVICE_METADATA': {
+                'localhost': {'orch_northbond_route_zmq_enabled': 'true'}
+            }
+        }
+        dbmgtr = self.migrator('route_perf_knobs_quarantine_input',
+                               quarantine=quarantine, tmp_path=tmp_path)
+        dbmgtr.migrate_route_performance_knobs()
+        assert dbmgtr.configDB.get_entry('SYSTEM_DEFAULTS', 'swss_zmq') == \
+            {'status': 'enabled'}
+        assert dbmgtr.configDB.get_entry('SYSTEM_DEFAULTS', 'async_rec') == {}
+
+    def test_async_rec_read_from_quarantine_file(self, tmp_path):
+        # The async fields take the same quarantine path as the ZMQ ones, and
+        # carry an enabled/disabled enum rather than a boolean.
+        quarantine = {
+            'DEVICE_METADATA': {
+                'localhost': {'async_swss_rec': 'enabled',
+                              'route_state_async_publish': 'enabled'}
+            }
+        }
+        dbmgtr = self.migrator('route_perf_knobs_quarantine_input',
+                               quarantine=quarantine, tmp_path=tmp_path)
+        dbmgtr.migrate_route_performance_knobs()
+        assert dbmgtr.configDB.get_entry('SYSTEM_DEFAULTS', 'async_rec') == \
+            {'status': 'enabled'}
+        assert dbmgtr.configDB.get_entry('SYSTEM_DEFAULTS', 'swss_zmq') == {}
+
+    def test_route_state_async_publish_does_not_feed_async_rec(self, tmp_path):
+        # Nothing ever read route_state_async_publish out of CONFIG_DB, so it
+        # must not be able to switch off a recorder somebody had on.
+        quarantine = {
+            'DEVICE_METADATA': {
+                'localhost': {'async_swss_rec': 'enabled',
+                              'route_state_async_publish': 'disabled'}
+            }
+        }
+        dbmgtr = self.migrator('route_perf_knobs_quarantine_input',
+                               quarantine=quarantine, tmp_path=tmp_path)
+        dbmgtr.migrate_route_performance_knobs()
+        assert dbmgtr.configDB.get_entry('SYSTEM_DEFAULTS', 'async_rec') == \
+            {'status': 'enabled'}
+
+    def test_no_knobs_present_is_a_noop(self):
+        dbmgtr = self.migrator('route_perf_knobs_quarantine_input')
+        dbmgtr.migrate_route_performance_knobs()
+        assert dbmgtr.configDB.get_table('SYSTEM_DEFAULTS') == {}
+
+    def test_version_202605_01_runs_the_migration(self):
+        # A DUT upgrading from 202605 enters the chain already stamped
+        # version_202605_01, so the migration has to hang off that handler
+        # rather than an earlier one. The stamp does not advance.
+        dbmgtr = self.migrator('route_perf_knobs_input')
+        assert dbmgtr.get_version() == 'version_202605_01'
+        with mock.patch.object(type(dbmgtr), 'common_migration_ops'):
+            dbmgtr.migrate()
+        assert dbmgtr.get_version() == 'version_202605_01'
+        assert dbmgtr.configDB.get_entry('SYSTEM_DEFAULTS', 'swss_zmq') == {'status': 'enabled'}
+        assert 'orch_northbond_route_zmq_enabled' not in \
+            dbmgtr.configDB.get_entry('DEVICE_METADATA', 'localhost')
+
+    def test_version_202511_01_walks_into_the_migration(self):
+        # A DUT upgrading from 202511 enters the chain earlier and reaches the
+        # same handler, so one hook covers both populations.
+        dbmgtr = self.migrator('route_perf_knobs_input')
+        dbmgtr.set_version('version_202511_01')
+        with mock.patch.object(type(dbmgtr), 'common_migration_ops'):
+            dbmgtr.migrate()
+        assert dbmgtr.get_version() == 'version_202605_01'
+        assert dbmgtr.configDB.get_entry('SYSTEM_DEFAULTS', 'swss_zmq') == {'status': 'enabled'}
+
+    def test_migration_is_idempotent_across_boots(self):
+        # version_202605_01 is terminal, so db_migrator re-runs it on every
+        # boot. A second pass must not change what the first produced.
+        dbmgtr = self.migrator('route_perf_knobs_input')
+        with mock.patch.object(type(dbmgtr), 'common_migration_ops'):
+            dbmgtr.migrate()
+            dbmgtr.migrate()
+        assert dbmgtr.get_version() == 'version_202605_01'
+        self.compare_tables(dbmgtr, 'route_perf_knobs_expected')
+
+
+class TestBgpNeighborPeerTypeAsnConflictMigrator(object):
+    """
+    asn and peer_type became mutually exclusive on BGP_NEIGHBOR and
+    BGP_PEER_GROUP rows. A row carrying both, left over from before that
+    constraint existed, has peer_type dropped so it validates going forward.
+    """
+
+    @classmethod
+    def setup_class(cls):
+        cls.saved_version_info = device_info.get_sonic_version_info
+        device_info.get_sonic_version_info = get_sonic_version_info_broadcom
+
+    @classmethod
+    def teardown_class(cls):
+        device_info.get_sonic_version_info = cls.saved_version_info
+        dbconnector.dedicated_dbs.clear()
+
+    def setup_method(self):
+        self.patchers = []
+
+    def teardown_method(self):
+        while self.patchers:
+            self.patchers.pop().stop()
+
+    def compare_tables(self, dbmgtr, expected_fixture):
+        dbconnector.dedicated_dbs['CONFIG_DB'] = os.path.join(
+            mock_db_path, 'config_db', expected_fixture)
+        expected_db = Db()
+        for table in ('BGP_NEIGHBOR', 'BGP_PEER_GROUP'):
+            diff = DeepDiff(dbmgtr.configDB.get_table(table),
+                            expected_db.cfgdb.get_table(table),
+                            ignore_order=True)
+            assert not diff, "{} mismatch: {}".format(table, diff)
+
+    def patch(self, target, attribute, value):
+        patcher = mock.patch.object(target, attribute, value)
+        patcher.start()
+        self.patchers.append(patcher)
+
+    def migrator(self, input_fixture, tmp_path=None, saved_config=None):
+        dbconnector.dedicated_dbs['CONFIG_DB'] = os.path.join(
+            mock_db_path, 'config_db', input_fixture)
+        import db_migrator
+        if saved_config is not None:
+            config_db_file = os.path.join(str(tmp_path), 'config_db.json')
+            with open(config_db_file, 'w') as f:
+                json.dump(saved_config, f)
+            self.patch(db_migrator, 'CONFIG_DB_FILE', config_db_file)
+        return db_migrator.DBMigrator(None)
+
+    def test_both_set_drops_peer_type_on_neighbor_and_peer_group(self):
+        dbmgtr = self.migrator('bgp_neighbor_peer_type_asn_conflict_input')
+        dbmgtr.migrate_bgp_neighbor_peer_type_asn_conflict()
+        self.compare_tables(dbmgtr, 'bgp_neighbor_peer_type_asn_conflict_expected')
+
+    def test_asn_only_is_a_noop(self):
+        dbmgtr = self.migrator('bgp_neighbor_peer_type_asn_conflict_input')
+        dbmgtr.migrate_bgp_neighbor_peer_type_asn_conflict()
+        assert dbmgtr.configDB.get_entry('BGP_NEIGHBOR', ('default', '192.0.2.2')) == \
+            {'asn': '65002'}
+
+    def test_peer_type_only_is_a_noop(self):
+        dbmgtr = self.migrator('bgp_neighbor_peer_type_asn_conflict_input')
+        dbmgtr.migrate_bgp_neighbor_peer_type_asn_conflict()
+        assert dbmgtr.configDB.get_entry('BGP_NEIGHBOR', ('default', '192.0.2.3')) == \
+            {'peer_type': 'internal'}
+
+    def test_single_key_template_row_is_skipped(self):
+        # BGP_NEIGHBOR_TEMPLATE_LIST rows are keyed on neighbor alone (a
+        # single-part key) and never carry peer_type in the first place;
+        # the tuple-length check must not touch them regardless.
+        dbmgtr = self.migrator('bgp_neighbor_peer_type_asn_conflict_input')
+        dbmgtr.migrate_bgp_neighbor_peer_type_asn_conflict()
+        assert dbmgtr.configDB.get_entry('BGP_NEIGHBOR', '10.0.0.1') == {'asn': '65200'}
+
+    def test_migration_is_idempotent(self):
+        dbmgtr = self.migrator('bgp_neighbor_peer_type_asn_conflict_input')
+        dbmgtr.migrate_bgp_neighbor_peer_type_asn_conflict()
+        dbmgtr.migrate_bgp_neighbor_peer_type_asn_conflict()
+        self.compare_tables(dbmgtr, 'bgp_neighbor_peer_type_asn_conflict_expected')
+
+    def test_saved_config_file_is_also_repaired(self, tmp_path):
+        # A plain 'config reload' YANG-validates the saved config_db.json
+        # before db_migrator ever runs, so a both-set row left there aborts
+        # every such reload unless the file itself is fixed too.
+        saved = {
+            'BGP_NEIGHBOR': {
+                'default|192.0.2.1': {'asn': '65001', 'peer_type': 'external'}
+            }
+        }
+        dbmgtr = self.migrator('bgp_neighbor_peer_type_asn_conflict_input',
+                               saved_config=saved, tmp_path=tmp_path)
+        dbmgtr.migrate_bgp_neighbor_peer_type_asn_conflict()
+        import db_migrator
+        with open(db_migrator.CONFIG_DB_FILE) as f:
+            file_cfg = json.load(f)
+        assert file_cfg['BGP_NEIGHBOR']['default|192.0.2.1'] == {'asn': '65001'}
+
+    def test_version_202605_01_runs_the_migration(self):
+        dbmgtr = self.migrator('bgp_neighbor_peer_type_asn_conflict_input')
+        assert dbmgtr.get_version() == 'version_202605_01'
+        with mock.patch.object(type(dbmgtr), 'common_migration_ops'):
+            dbmgtr.migrate()
+        assert dbmgtr.get_version() == 'version_202605_01'
+        self.compare_tables(dbmgtr, 'bgp_neighbor_peer_type_asn_conflict_expected')
+
+
+class TestRouterInterfaceVlanConflictMigrator(object):
+    """
+    A port left both a VLAN member and a router interface loses one side.
+    """
+
+    @classmethod
+    def setup_class(cls):
+        os.environ['UTILITIES_UNIT_TESTING'] = "2"
+
+    @classmethod
+    def teardown_class(cls):
+        os.environ['UTILITIES_UNIT_TESTING'] = "0"
+        dbconnector.dedicated_dbs['CONFIG_DB'] = None
+
+    def migrator(self):
+        dbconnector.dedicated_dbs['CONFIG_DB'] = os.path.join(
+            mock_db_path, 'config_db', 'dns_nameserver_expected')
+        import db_migrator
+        return db_migrator.DBMigrator(None)
+
+    def test_membership_of_an_addressed_router_interface_is_removed(self):
+        dbmgtr = self.migrator()
+        dbmgtr.configDB.set_entry("PORTCHANNEL_INTERFACE", ("PortChannel0001", "10.0.0.1/31"), {"NULL": "NULL"})
+        dbmgtr.configDB.set_entry("VLAN_MEMBER", ("Vlan1000", "PortChannel0001"), {"tagging_mode": "tagged"})
+
+        dbmgtr.migrate_router_interface_vlan_conflicts()
+
+        assert dbmgtr.configDB.get_entry("VLAN_MEMBER", ("Vlan1000", "PortChannel0001")) == {}
+        assert ("PortChannel0001", "10.0.0.1/31") in dbmgtr.configDB.get_keys("PORTCHANNEL_INTERFACE")
+
+    def test_bare_router_interface_row_of_a_vlan_member_is_removed(self):
+        dbmgtr = self.migrator()
+        dbmgtr.configDB.set_entry("INTERFACE", "Ethernet4", {"mpls": "enable"})
+        dbmgtr.configDB.set_entry("VLAN_MEMBER", ("Vlan1000", "Ethernet4"), {"tagging_mode": "untagged"})
+
+        dbmgtr.migrate_router_interface_vlan_conflicts()
+
+        assert dbmgtr.configDB.get_entry("INTERFACE", "Ethernet4") == {}
+        assert dbmgtr.configDB.get_entry("VLAN_MEMBER", ("Vlan1000", "Ethernet4")) == {"tagging_mode": "untagged"}
+
+    def test_config_without_a_conflict_is_left_alone(self):
+        dbmgtr = self.migrator()
+        dbmgtr.configDB.set_entry("INTERFACE", "Ethernet0", {"mpls": "enable"})
+        dbmgtr.configDB.set_entry("VLAN_MEMBER", ("Vlan1000", "Ethernet4"), {"tagging_mode": "untagged"})
+        before = {table: dbmgtr.configDB.get_table(table)
+                  for table in ("INTERFACE", "PORTCHANNEL_INTERFACE", "VLAN_MEMBER")}
+
+        dbmgtr.migrate_router_interface_vlan_conflicts()
+
+        assert {table: dbmgtr.configDB.get_table(table) for table in before} == before
+
+    def test_wired_into_version_202605_01(self):
+        dbmgtr = self.migrator()
+        import db_migrator
+
+        with mock.patch.object(db_migrator.DBMigrator, 'migrate_router_interface_vlan_conflicts') as mock_migrate:
+            assert dbmgtr.version_202511_01() == 'version_202605_01'
+            mock_migrate.assert_not_called()
+            with mock.patch.object(db_migrator.DBMigrator, 'migrate_route_performance_knobs'), \
+                    mock.patch.object(db_migrator.DBMigrator, 'migrate_bgp_neighbor_peer_type_asn_conflict'), \
+                    mock.patch.object(db_migrator.DBMigrator, 'migrate_remove_switchport_mode'):
+                dbmgtr.version_202605_01()
+            mock_migrate.assert_called_once()
+
+
+class TestRemoveSwitchportModeMigrator(object):
+    """
+    PORT and PORTCHANNEL rows carrying the mode field have it dropped.
+    """
+
+    @classmethod
+    def setup_class(cls):
+        os.environ['UTILITIES_UNIT_TESTING'] = "2"
+
+    @classmethod
+    def teardown_class(cls):
+        os.environ['UTILITIES_UNIT_TESTING'] = "0"
+        dbconnector.dedicated_dbs['CONFIG_DB'] = None
+
+    def migrator(self):
+        dbconnector.dedicated_dbs['CONFIG_DB'] = os.path.join(
+            mock_db_path, 'config_db', 'dns_nameserver_expected')
+        import db_migrator
+        return db_migrator.DBMigrator(None)
+
+    def test_mode_is_removed_and_other_fields_survive(self):
+        dbmgtr = self.migrator()
+        dbmgtr.configDB.set_entry("PORT", "Ethernet0", {"lanes": "0", "mode": "access"})
+        dbmgtr.configDB.set_entry("PORTCHANNEL", "PortChannel0001", {"mtu": "9100", "mode": "trunk"})
+
+        dbmgtr.migrate_remove_switchport_mode()
+
+        port_entry = dbmgtr.configDB.get_entry("PORT", "Ethernet0")
+        assert "mode" not in port_entry
+        assert port_entry.get("lanes") == "0"
+
+        po_entry = dbmgtr.configDB.get_entry("PORTCHANNEL", "PortChannel0001")
+        assert "mode" not in po_entry
+        assert po_entry.get("mtu") == "9100"
+
+    def test_rows_without_mode_are_left_alone(self):
+        dbmgtr = self.migrator()
+        dbmgtr.configDB.set_entry("PORT", "Ethernet4", {"lanes": "4"})
+
+        dbmgtr.migrate_remove_switchport_mode()
+
+        assert dbmgtr.configDB.get_entry("PORT", "Ethernet4") == {"lanes": "4"}
+
+    def test_is_idempotent(self):
+        # The migration may run more than once.
+        dbmgtr = self.migrator()
+        dbmgtr.configDB.set_entry("PORT", "Ethernet8", {"lanes": "8", "mode": "trunk"})
+
+        dbmgtr.migrate_remove_switchport_mode()
+        first = dbmgtr.configDB.get_entry("PORT", "Ethernet8")
+        dbmgtr.migrate_remove_switchport_mode()
+
+        assert dbmgtr.configDB.get_entry("PORT", "Ethernet8") == first
+        assert "mode" not in first
+
+    def test_wired_into_version_202605_01(self):
+        dbmgtr = self.migrator()
+        import db_migrator
+
+        with mock.patch.object(db_migrator.DBMigrator, 'migrate_route_performance_knobs'), \
+                mock.patch.object(db_migrator.DBMigrator, 'migrate_bgp_neighbor_peer_type_asn_conflict'), \
+                mock.patch.object(db_migrator.DBMigrator,
+                                  'migrate_remove_switchport_mode') as mock_migrate:
+            dbmgtr.version_202605_01()
+
+        mock_migrate.assert_called_once()
+
+    def test_unreadable_table_does_not_stop_the_other(self):
+        dbmgtr = self.migrator()
+        dbmgtr.configDB.set_entry("PORTCHANNEL", "PortChannel0001", {"mtu": "9100", "mode": "trunk"})
+        get_table = dbmgtr.configDB.get_table
+
+        def failing_get_table(table):
+            if table == "PORT":
+                raise RuntimeError("read failed")
+            return get_table(table)
+
+        with mock.patch.object(dbmgtr.configDB, 'get_table', side_effect=failing_get_table):
+            dbmgtr.migrate_remove_switchport_mode()
+
+        assert dbmgtr.configDB.get_entry("PORTCHANNEL", "PortChannel0001") == {"mtu": "9100"}
+
+    def test_unwritable_row_does_not_stop_the_others(self):
+        dbmgtr = self.migrator()
+        dbmgtr.configDB.set_entry("PORT", "Ethernet0", {"lanes": "0", "mode": "access"})
+        dbmgtr.configDB.set_entry("PORT", "Ethernet4", {"lanes": "4", "mode": "trunk"})
+        set_entry = dbmgtr.configDB.set_entry
+
+        def failing_set_entry(table, key, data):
+            if key == "Ethernet0":
+                raise RuntimeError("write failed")
+            return set_entry(table, key, data)
+
+        with mock.patch.object(dbmgtr.configDB, 'set_entry', side_effect=failing_set_entry):
+            dbmgtr.migrate_remove_switchport_mode()
+
+        assert dbmgtr.configDB.get_entry("PORT", "Ethernet0")["mode"] == "access"
+        assert dbmgtr.configDB.get_entry("PORT", "Ethernet4") == {"lanes": "4"}
+>>>>>>> 917270d3 (NOS-16717: derive the switchport mode instead of storing it (#1083))

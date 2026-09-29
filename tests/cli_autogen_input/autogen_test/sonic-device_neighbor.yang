@@ -16,7 +16,6 @@ module sonic-device_neighbor {
 
     import sonic-port {
         prefix port;
-        revision-date 2019-07-01;
     }
 
     description "DEVICE_NEIGHBOR YANG Module for SONiC OS";

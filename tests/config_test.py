@@ -5968,7 +5968,79 @@ class TestRestartServicesMonitOrdering(object):
         run_cmd.side_effect = run_command_side_effect
         wait_mock.side_effect = wait_side_effect
 
+<<<<<<< HEAD
         config._restart_services()
+=======
+class TestSplitRouterInterfaceVlanConflicts(object):
+
+    def test_memberships_of_addressed_router_interfaces_are_split_out(self):
+        cfg = {
+            'INTERFACE': {'Ethernet0': {}, 'Ethernet0|10.0.0.1/31': {}},
+            'PORTCHANNEL_INTERFACE': {'PortChannel2|10.0.0.3/31': {}},
+            'VLAN_MEMBER': {
+                'Vlan10|Ethernet0': {'tagging_mode': 'untagged'},
+                'Vlan10|PortChannel2': {'tagging_mode': 'tagged'},
+                'Vlan10|Ethernet4': {'tagging_mode': 'untagged'},
+            },
+        }
+        kept, removed = config.split_router_interface_vlan_conflicts(cfg)
+        assert kept['VLAN_MEMBER'] == {'Vlan10|Ethernet4': {'tagging_mode': 'untagged'}}
+        assert kept['INTERFACE'] == cfg['INTERFACE']
+        assert kept['PORTCHANNEL_INTERFACE'] == cfg['PORTCHANNEL_INTERFACE']
+        assert removed == {'VLAN_MEMBER': {
+            'Vlan10|Ethernet0': {'tagging_mode': 'untagged'},
+            'Vlan10|PortChannel2': {'tagging_mode': 'tagged'},
+        }}
+
+    def test_bare_router_interface_row_of_a_vlan_member_is_split_out(self):
+        cfg = {
+            'INTERFACE': {'Ethernet4': {'mpls': 'enable'}, 'Ethernet8': {}, 'Ethernet8|10.0.0.5/31': {}},
+            'VLAN_MEMBER': {'Vlan10|Ethernet4': {'tagging_mode': 'untagged'}},
+        }
+        kept, removed = config.split_router_interface_vlan_conflicts(cfg)
+        assert kept['VLAN_MEMBER'] == cfg['VLAN_MEMBER']
+        assert kept['INTERFACE'] == {'Ethernet8': {}, 'Ethernet8|10.0.0.5/31': {}}
+        assert removed == {'INTERFACE': {'Ethernet4': {'mpls': 'enable'}}}
+
+    def test_table_the_split_empties_is_left_out(self):
+        cfg = {
+            'INTERFACE': {'Ethernet0': {}, 'Ethernet0|10.0.0.1/31': {}},
+            'VLAN_MEMBER': {'Vlan10|Ethernet0': {'tagging_mode': 'untagged'}},
+        }
+        kept, removed = config.split_router_interface_vlan_conflicts(cfg)
+        assert 'VLAN_MEMBER' not in kept
+        assert removed == {'VLAN_MEMBER': {'Vlan10|Ethernet0': {'tagging_mode': 'untagged'}}}
+
+    def test_config_without_a_conflict_is_untouched(self):
+        cfg = {
+            'INTERFACE': {'Ethernet0': {}},
+            'VLAN_MEMBER': {'Vlan10|Ethernet4': {'tagging_mode': 'untagged'}},
+        }
+        kept, removed = config.split_router_interface_vlan_conflicts(cfg)
+        assert kept == cfg
+        assert removed == {}
+
+
+class TestMergeConfigFragments(object):
+
+    def test_fields_of_a_shared_entry_are_merged(self):
+        first = {'VLAN_MEMBER': {'Vlan10|Ethernet0': {'old_field': '1'}},
+                 'LINK_DEBOUNCE': {'Ethernet0': {'link_down_delay': '5000'}}}
+        second = {'VLAN_MEMBER': {'Vlan10|Ethernet0': {'tagging_mode': 'untagged'},
+                                  'Vlan10|Ethernet4': {'tagging_mode': 'tagged'}}}
+        assert config.merge_config_fragments(first, second) == {
+            'VLAN_MEMBER': {
+                'Vlan10|Ethernet0': {'old_field': '1', 'tagging_mode': 'untagged'},
+                'Vlan10|Ethernet4': {'tagging_mode': 'tagged'},
+            },
+            'LINK_DEBOUNCE': {'Ethernet0': {'link_down_delay': '5000'}},
+        }
+        assert first == {'VLAN_MEMBER': {'Vlan10|Ethernet0': {'old_field': '1'}},
+                         'LINK_DEBOUNCE': {'Ethernet0': {'link_down_delay': '5000'}}}
+
+
+class TestReconcileConfigFile(object):
+>>>>>>> 917270d3 (NOS-16717: derive the switchport mode instead of storing it (#1083))
 
         memory_services = {'container_memory_snmp', 'container_memory_gnmi'}
         monitored = [svc for kind, svc in events if kind == 'monitor']
@@ -5983,6 +6055,7 @@ class TestRestartServicesMonitOrdering(object):
         assert 'container_checker' in waited
         assert memory_services <= set(waited)
 
+<<<<<<< HEAD
         # All memory-service waits must occur strictly before monit reload.
         reload_idx = next(i for i, e in enumerate(events) if e[0] == 'reload')
         memory_wait_idxs = [
@@ -5991,3 +6064,98 @@ class TestRestartServicesMonitOrdering(object):
         ]
         assert memory_wait_idxs, "no wait recorded for container_memory_* services"
         assert all(i < reload_idx for i in memory_wait_idxs)
+=======
+        assert quarantine == {
+            'DEVICE_METADATA': {'localhost': {'orch_northbond_route_zmq_enabled': 'false'}},
+            'LINK_DEBOUNCE': {'Ethernet0': {'link_down_delay': '5000'}},
+        }
+        with open(path) as f:
+            assert json.load(f) == {
+                'DEVICE_METADATA': {'localhost': {'hostname': 'humm169'}}}
+        with open(path + config.CONFIG_DB_QUARANTINE_SUFFIX) as f:
+            assert json.load(f) == quarantine
+
+    def test_vlan_member_of_a_router_interface_is_quarantined(self, tmp_path):
+        path = self.write_config(tmp_path, {
+            'PORTCHANNEL_INTERFACE': {'PortChannel2': {}, 'PortChannel2|10.0.0.3/31': {}},
+            'VLAN_MEMBER': {
+                'Vlan10|PortChannel2': {'tagging_mode': 'untagged'},
+                'Vlan10|Ethernet4': {'tagging_mode': 'untagged'},
+            },
+        })
+        sy = fake_sonic_yang({'PORTCHANNEL_INTERFACE': set(),
+                              'VLAN_MEMBER': {'tagging_mode'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            with mock.patch('config.main.click.secho') as secho:
+                quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        printed = [c.args[0] for c in secho.call_args_list]
+        assert "{}: VLAN_MEMBER|Vlan10|PortChannel2 was not loaded because PortChannel2 is a " \
+               "router interface".format(path) in printed
+        assert not any("has no YANG model" in line for line in printed)
+        assert quarantine == {'VLAN_MEMBER': {
+            'Vlan10|PortChannel2': {'tagging_mode': 'untagged'}}}
+        with open(path) as f:
+            assert json.load(f) == {
+                'PORTCHANNEL_INTERFACE': {'PortChannel2': {}, 'PortChannel2|10.0.0.3/31': {}},
+                'VLAN_MEMBER': {'Vlan10|Ethernet4': {'tagging_mode': 'untagged'}},
+            }
+        with open(path + config.CONFIG_DB_QUARANTINE_SUFFIX) as f:
+            assert json.load(f) == quarantine
+
+    def test_file_matching_the_models_is_left_alone(self, tmp_path):
+        original = {'DEVICE_METADATA': {'localhost': {'hostname': 'humm169'}}}
+        path = self.write_config(tmp_path, original)
+        sy = fake_sonic_yang({'DEVICE_METADATA': {'hostname'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            assert config.reconcile_config_file_with_yang_models(path) == {}
+
+        with open(path) as f:
+            assert json.load(f) == original
+        assert not os.path.exists(path + config.CONFIG_DB_QUARANTINE_SUFFIX)
+
+    def test_multi_asic_file_is_quarantined_per_scope(self, tmp_path):
+        path = self.write_config(tmp_path, {
+            'localhost': {'DEVICE_METADATA': {'localhost': {'hostname': 'humm169'}}},
+            'asic0': {'DEVICE_METADATA': {
+                'localhost': {'hostname': 'humm169-asic0',
+                              'orch_southbound_zmq_enabled': 'true'}}},
+        })
+        sy = fake_sonic_yang({'DEVICE_METADATA': {'hostname'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=True), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        # Only asic0 had anything to drop, so only asic0 gets a scope entry and
+        # the result stays namespace keyed rather than collapsing to tables.
+        assert quarantine == {'asic0': {'DEVICE_METADATA': {
+            'localhost': {'orch_southbound_zmq_enabled': 'true'}}}}
+        with open(path) as f:
+            assert json.load(f) == {
+                'localhost': {'DEVICE_METADATA': {'localhost': {'hostname': 'humm169'}}},
+                'asic0': {'DEVICE_METADATA': {'localhost': {'hostname': 'humm169-asic0'}}},
+            }
+
+    def test_fails_open_and_leaves_the_file_untouched(self, tmp_path):
+        original = {'DEVICE_METADATA': {'localhost': {'hostname': 'humm169'}}}
+        path = self.write_config(tmp_path, original)
+
+        with mock.patch('config.main.sonic_yang.SonicYang',
+                        side_effect=Exception("no yang models")):
+            assert config.reconcile_config_file_with_yang_models(path) == {}
+
+        with open(path) as f:
+            assert json.load(f) == original
+        assert not os.path.exists(path + config.CONFIG_DB_QUARANTINE_SUFFIX)
+>>>>>>> 917270d3 (NOS-16717: derive the switchport mode instead of storing it (#1083))

@@ -1,5 +1,6 @@
 import os
 import traceback
+import types
 import pytest
 from unittest import mock
 from click.testing import CliRunner
@@ -8,6 +9,7 @@ import config.main as config
 
 import show.main as show
 from utilities_common.db import Db
+import utilities_common.cli as clicommon
 
 
 from importlib import reload
@@ -256,6 +258,7 @@ test_config_add_del_add_vlans_and_add_vlans_member_except_vlan_after_del_member_
 +-----------+-----------------+-----------------+----------------+-------------+--------------------------+
 """
 
+<<<<<<< HEAD
 test_config_add_del_vlan_and_vlan_member_with_switchport_modes_output = """\
 +-----------+-----------------+-----------------+----------------+-------------+--------------------------+
 |   VLAN ID | IP Address      | Ports           | Port Tagging   | Proxy ARP   | Static Anycast Gateway   |
@@ -309,6 +312,8 @@ def get_intf_switchport_status(self, output: str, interface: str) -> str:
             return parts[1]
     return "interface not found"
 
+=======
+>>>>>>> 917270d3 (NOS-16717: derive the switchport mode instead of storing it (#1083))
 
 class TestVlan(object):
     _old_run_bgp_command = None
@@ -718,13 +723,6 @@ class TestVlan(object):
 
     def test_config_vlan_add_nonexist_portchannel_member(self):
         runner = CliRunner()
-        # switch port mode for PortChannel1011 to trunk mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"], ["trunk", "PortChannel1011"])
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code != 0
-        assert "Error: PortChannel1011 does not exist" in result.output
-
         result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["add"],
                                ["1000", "PortChannel1011"])
         print(result.exit_code)
@@ -741,16 +739,15 @@ class TestVlan(object):
         assert result.exit_code != 0
         assert "Error: Ethernet44 is configured as mirror destination port" in result.output
 
-    def test_show_port_switchport_etp33_in_alias_mode(self):
+    def test_config_vlan_add_router_interface_member(self):
+        # Ethernet0 has an INTERFACE row, so it is a router port and cannot sit in a VLAN.
         runner = CliRunner()
-        os.environ["SONIC_CLI_IFACE_MODE"] = "alias"
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"],
-                               ["trunk", "etp33"])
-        os.environ["SONIC_CLI_IFACE_MODE"] = "default"
+        result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["add"],
+                               ["2000", "Ethernet0"])
         print(result.exit_code)
         print(result.output)
         assert result.exit_code != 0
-        assert "Error: etp33 does not exist" in result.output
+        assert "Error: Ethernet0 is a router interface!" in result.output
 
     def test_show_port_vlan_etp33_in_alias_mode(self):
         runner = CliRunner()
@@ -773,110 +770,6 @@ class TestVlan(object):
         print(result.output)
         assert result.exit_code != 0
         assert "Error: etp33 is not a member of Vlan4000" in result.output
-
-    def test_config_switchport_mode_with_mirror_destintion_port(self):
-        runner = CliRunner()
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"], ["trunk", "Ethernet44"])
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code != 0
-        assert "Error: Ethernet44 is configured as mirror destination port" in result.output
-
-    def test_config_vlan_add_portchannel_member_with_switchport_modes(self):
-        runner = CliRunner()
-        db = Db()
-
-        # Configure Ethernet112 to trunk mode; should give error as it is part of PortChannel0001
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"], ["trunk", "Ethernet112"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code != 0
-        assert "Error: Ethernet112 is part of portchannel!" in result.output
-
-        # Configure PortChannel0001 to routed mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"],
-                               ["routed", "PortChannel0001"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-        result = runner.invoke(show.cli.commands["interfaces"].commands["switchport"].commands["status"], obj=db)
-        switchport_status = get_intf_switchport_status(self, result.output, "PortChannel0001")
-        assert "routed" in switchport_status
-
-        # Configure PortChannel0001 to routed mode again; should give error as it is already in routed mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"],
-                               ["routed", "PortChannel0001"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code != 0
-        assert "Error: PortChannel0001 is already in routed mode" in result.output
-
-        # Configure PortChannel0001 to trunk mode; should give error as it is a router interface
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"],
-                               ["trunk", "PortChannel0001"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code != 0
-        assert "Error: Remove IP from PortChannel0001 to change mode!" in result.output
-
-        # Remove PortChannel1001 member from Vlan4000
-        result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["del"],
-                               ["4000", "PortChannel1001"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-
-        # Configure PortChannel1001 to access mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"],
-                               ["access", "PortChannel1001"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-        result = runner.invoke(show.cli.commands["interfaces"].commands["switchport"].commands["status"], obj=db)
-        print(result.output)
-        switchport_status = get_intf_switchport_status(self, result.output, "PortChannel1001")
-        assert "access" in switchport_status
-
-        # Configure PortChannel1001 back to routed mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"],
-                               ["routed", "PortChannel1001"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-        result = runner.invoke(show.cli.commands["interfaces"].commands["switchport"].commands["status"], obj=db)
-        switchport_status = get_intf_switchport_status(self, result.output, "PortChannel1001")
-        assert "routed" in switchport_status
-
-        # Configure PortChannel1001 to trunk mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"],
-                               ["trunk", "PortChannel1001"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-        result = runner.invoke(show.cli.commands["interfaces"].commands["switchport"].commands["status"], obj=db)
-        switchport_status = get_intf_switchport_status(self, result.output, "PortChannel1001")
-        assert "trunk" in switchport_status
-
-        # Add back PortChannel1001 tagged member to Vlan4000
-        result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["add"],
-                               ["4000", "PortChannel1001"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-
-        # Add PortChannel1001 to Vlan1000
-        result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["add"],
-                               ["1000", "PortChannel1001", "--untagged"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-
-        # show output
-        result = runner.invoke(show.cli.commands["vlan"].commands["brief"], [], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-        assert result.output == show_vlan_brief_with_portchannel_output
 
     def test_config_vlan_with_vxlanmap_del_vlan(self, mock_restart_dhcp_relay_service):
         runner = CliRunner()
@@ -1247,220 +1140,6 @@ class TestVlan(object):
         assert result.exit_code == 0
         assert result.output == show_vlan_brief_output
 
-    def test_config_add_del_vlan_and_vlan_member_with_switchport_modes(self, mock_restart_dhcp_relay_service):
-        runner = CliRunner()
-        db = Db()
-
-        # add vlan 1001
-        result = runner.invoke(config.config.commands["vlan"].commands["add"], ["1001"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-
-        # configure Ethernet20 to routed mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"], ["routed", "Ethernet20"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-        assert "Ethernet20 switched to routed mode" in result.output
-
-        # configure Ethernet20 to access mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"], ["access", "Ethernet20"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-        assert "Ethernet20 switched to access mode" in result.output
-        result = runner.invoke(show.cli.commands["interfaces"].commands["switchport"].commands["status"], obj=db)
-        print(result.output)
-        switchport_status = get_intf_switchport_status(self, result.output, "Ethernet20")
-        assert "access" in switchport_status
-
-        # configure Ethernet20 to access mode again; should give error as it is already in access mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"], ["access", "Ethernet20"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code != 0
-        assert "Ethernet20 is already in access mode" in result.output
-
-        # add Ethernet20 to vlan 1001
-        result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["add"],
-                               ["1001", "Ethernet20", "--untagged"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        traceback.print_tb(result.exc_info[2])
-        assert result.exit_code == 0
-
-        # add Ethernet20 to vlan 1001 as tagged member
-        result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["add"],
-                               ["1000", "Ethernet20"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        traceback.print_tb(result.exc_info[2])
-        assert result.exit_code != 0
-        assert "Ethernet20 is in access mode! Tagged Members cannot be added" in result.output
-
-        # configure Ethernet20 from access to trunk mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"], ["trunk", "Ethernet20"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-        assert "Ethernet20 switched to trunk mode" in result.output
-
-        # add Ethernet20 to vlan 1001 as tagged member
-        result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["add"],
-                               ["1000", "Ethernet20"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        traceback.print_tb(result.exc_info[2])
-        assert result.exit_code == 0
-        result = runner.invoke(show.cli.commands["interfaces"].commands["switchport"].commands["status"], obj=db)
-        print(result.output)
-        switchport_status = get_intf_switchport_status(self, result.output, "Ethernet20")
-        assert "trunk" in switchport_status
-
-        # show output
-        result = runner.invoke(show.cli.commands["vlan"].commands["brief"], [], obj=db)
-        print(result.output)
-        assert result.output == test_config_add_del_vlan_and_vlan_member_with_switchport_modes_output
-
-        # configure Ethernet20 from trunk to routed mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"], ["routed", "Ethernet20"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code != 0
-        assert "Ethernet20 has tagged member(s). \nRemove them to change mode to routed" in result.output
-
-        # remove vlan member
-        result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["del"],
-                               ["1000", "Ethernet20"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-
-        # configure Ethernet20 from trunk to routed mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"], ["routed", "Ethernet20"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code != 0
-        assert "Ethernet20 has untagged member. \nRemove it to change mode to routed" in result.output
-
-        # remove vlan member
-        result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["del"],
-                               ["1001", "Ethernet20"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-
-        # configure Ethernet20 from trunk to routed mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"], ["routed", "Ethernet20"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-        assert "Ethernet20 switched to routed mode" in result.output
-
-        result = runner.invoke(show.cli.commands["interfaces"].commands["switchport"].commands["status"], obj=db)
-        print(result.output)
-        switchport_status = get_intf_switchport_status(self, result.output, "Ethernet20")
-        assert "routed" in switchport_status
-
-        # del 1001
-        result = runner.invoke(config.config.commands["vlan"].commands["del"], ["1001"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-
-        # show output
-        result = runner.invoke(show.cli.commands["vlan"].commands["brief"], [], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-        assert result.output == show_vlan_brief_output
-
-    def test_config_add_del_with_switchport_modes_changes_output(
-            self, mock_restart_dhcp_relay_service):
-        runner = CliRunner()
-        db = Db()
-
-        # add vlan 1001
-        result = runner.invoke(config.config.commands["vlan"].commands["add"], ["1001"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-
-        # configure Ethernet20 to trunk mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"], ["trunk", "Ethernet20"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-        assert "Ethernet20 switched to trunk mode" in result.output
-
-        result = runner.invoke(show.cli.commands["interfaces"].commands["switchport"].commands["status"], obj=db)
-        print(result.output)
-        switchport_status = get_intf_switchport_status(self, result.output, "Ethernet20")
-        assert "trunk" in switchport_status
-
-        # add Ethernet64 to vlan 1001 but Ethernet64 is in routed mode will give error
-        result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["add"],
-                               ["1001", "Ethernet64"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        traceback.print_tb(result.exc_info[2])
-        assert result.exit_code != 0
-        assert "Ethernet64 is in routed mode!\nUse switchport mode command to change port mode" in result.output
-
-        # configure Ethernet64 from routed to trunk mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"], ["trunk", "Ethernet64"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-        assert "Ethernet64 switched to trunk mode" in result.output
-        result = runner.invoke(show.cli.commands["interfaces"].commands["switchport"].commands["status"], obj=db)
-        print(result.output)
-        switchport_status = get_intf_switchport_status(self, result.output, "Ethernet20")
-        assert "trunk" in switchport_status
-
-        # add Ethernet64 to vlan 1001
-        result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["add"],
-                               ["1001", "Ethernet64"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        traceback.print_tb(result.exc_info[2])
-        assert result.exit_code == 0
-
-        # configure Ethernet64 from trunk to access mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"], ["access", "Ethernet64"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code != 0
-        assert "Ethernet64 is in trunk mode and have tagged member(s)." in result.output
-
-        # remove vlan member
-        result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["del"],
-                               ["1001", "Ethernet64"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-
-        # configure Ethernet64 from routed to access mode
-        result = runner.invoke(config.config.commands["switchport"].commands["mode"], ["access", "Ethernet64"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-        assert "Ethernet64 switched to access mode" in result.output
-
-        result = runner.invoke(show.cli.commands["interfaces"].commands["switchport"].commands["status"], obj=db)
-        print(result.output)
-        switchport_status = get_intf_switchport_status(self, result.output, "Ethernet64")
-        assert "access" in switchport_status
-
-        # show output
-        result = runner.invoke(show.cli.commands["vlan"].commands["brief"], [], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
-        assert result.output == (
-            test_config_add_del_with_switchport_modes_changes_output)
-
     def test_config_vlan_proxy_arp_with_nonexist_vlan_intf_table(self):
         modes = ["enabled", "disabled"]
         runner = CliRunner()
@@ -1557,6 +1236,17 @@ class TestVlan(object):
         print(result.exit_code, result.output)
         assert 'Interface Ethernet4 is a member of vlan\nAborting!\n' in result.output
 
+    def test_config_set_router_port_on_member_portchannel(self):
+        db = Db()
+        runner = CliRunner()
+        obj = {'config_db': db.cfgdb}
+
+        result = runner.invoke(config.config.commands["interface"].commands["ip"].commands["add"],
+                               ["PortChannel1001", "10.10.10.1/24"], obj=obj)
+        print(result.exit_code, result.output)
+        assert 'Interface PortChannel1001 is a member of vlan\nAborting!\n' in result.output
+        assert not clicommon.is_pc_router_interface(db.cfgdb, 'PortChannel1001')
+
     def test_config_vlan_add_member_of_portchannel(self):
         runner = CliRunner()
         db = Db()
@@ -1567,6 +1257,37 @@ class TestVlan(object):
         print(result.output)
         assert result.exit_code != 0
         assert "Error: Ethernet32 is part of portchannel!" in result.output
+
+    def test_config_vlan_add_del_portchannel_member(self):
+        runner = CliRunner()
+        db = Db()
+        member = config.config.commands["vlan"].commands["member"]
+
+        def switchport_status():
+            result = runner.invoke(show.cli.commands["interfaces"].commands["switchport"].commands["status"],
+                                   obj=db)
+            assert result.exit_code == 0
+            return dict(line.split()[:2] for line in result.output.splitlines()[2:] if line.strip())
+
+        result = runner.invoke(member.commands["del"], ["4000", "PortChannel1001"], obj=db)
+        print(result.exit_code, result.output)
+        assert result.exit_code == 0
+        assert switchport_status()["PortChannel1001"] == "routed"
+
+        result = runner.invoke(member.commands["add"], ["1000", "PortChannel1001", "--untagged"], obj=db)
+        print(result.exit_code, result.output)
+        assert result.exit_code == 0
+        assert switchport_status()["PortChannel1001"] == "access"
+
+        result = runner.invoke(member.commands["add"], ["4000", "PortChannel1001"], obj=db)
+        print(result.exit_code, result.output)
+        assert result.exit_code == 0
+        assert switchport_status()["PortChannel1001"] == "trunk"
+
+        result = runner.invoke(show.cli.commands["vlan"].commands["brief"], [], obj=db)
+        print(result.exit_code, result.output)
+        assert result.exit_code == 0
+        assert result.output == show_vlan_brief_with_portchannel_output
 
     @pytest.mark.parametrize("ip_version", ["ipv4", "ipv6"])
     def test_config_add_del_vlan_dhcp_relay_with_empty_entry(self, ip_version, mock_restart_dhcp_relay_service):
@@ -1763,3 +1484,166 @@ class TestVlan(object):
             assert result.exit_code != 0
 
         config.vlan.clicommon.run_command = origin_run_command_func
+<<<<<<< HEAD
+=======
+
+    def test_config_vlan_autostate_valid_config(self):
+        modes = ["enabled", "disabled"]
+        runner = CliRunner()
+        db = Db()
+
+        for mode in modes:
+            result = runner.invoke(config.config.commands["vlan"].commands["autostate"],
+                                   ["1000", mode], obj=db)
+
+            print(result.exit_code)
+            print(result.output)
+            assert result.exit_code == 0
+
+            vlan_entry = db.cfgdb.get_entry("VLAN", "Vlan1000")
+            assert vlan_entry.get("autostate") == "true" if mode == "enabled" else "false"
+
+    def test_config_vlan_autostate_nonexist_vlan(self):
+        modes = ["enabled", "disabled"]
+        runner = CliRunner()
+        db = Db()
+
+        for mode in modes:
+            result = runner.invoke(config.config.commands["vlan"].commands["autostate"],
+                                   ["1001", mode], obj=db)
+
+            print(result.exit_code)
+            print(result.output)
+
+            assert result.exit_code != 0
+            assert "Interface Vlan1001 does not exist" in result.output
+
+    def test_show_vlan_autostate(self):
+        runner = CliRunner()
+        db = Db()
+
+        # Enable autostate on Vlan1000
+        db.cfgdb.mod_entry("VLAN", "Vlan1000", {"autostate": "true"})
+
+        # Show vlan brief should display autostate as enabled
+        result = runner.invoke(show.cli.commands["vlan"].commands["brief"], [], obj=db)
+        print(result.output)
+        assert result.exit_code == 0
+
+        # Check that the output contains "enabled" for Vlan1000
+        lines = result.output.split('\n')
+        vlan1000_line = [line for line in lines if '1000' in line and 'Ethernet4' in line]
+        assert len(vlan1000_line) > 0
+        assert 'enabled' in vlan1000_line[0]
+
+
+class FakeStpConfigDb(object):
+    """Dict-backed stand-in exposing the ConfigDBConnector calls the STP/VLAN
+    helpers use, preserving set_entry whole-row-replace semantics."""
+    def __init__(self, tables):
+        self.tables = tables
+
+    def get_entry(self, table, key):
+        return dict(self.tables.get(table, {}).get(key, {}))
+
+    def set_entry(self, table, key, fvs):
+        if fvs is None:
+            self.tables.get(table, {}).pop(key, None)
+        else:
+            self.tables.setdefault(table, {})[key] = dict(fvs)
+
+    def mod_entry(self, table, key, fvs):
+        self.tables.setdefault(table, {}).setdefault(key, {}).update(fvs)
+
+    def get_table(self, table):
+        return self.tables.get(table, {})
+
+
+class TestStpPortSurvivesVlanMembership(object):
+    """VLAN membership changes must not destroy STP_PORT config."""
+
+    def _db(self, stp_port=None, vlan_members=()):
+        tables = {'STP': {'GLOBAL': {'mode': 'pvst'}},
+                  'VLAN_MEMBER': {m: {'tagging_mode': 'untagged'} for m in vlan_members}}
+        if stp_port is not None:
+            tables['STP_PORT'] = {'Ethernet4': dict(stp_port)}
+        return FakeStpConfigDb(tables)
+
+    def test_member_del_keeps_customized_row(self):
+        import config.vlan as config_vlan
+        import config.stp as config_stp
+        customized = dict(config_stp.STP_PORT_DEFAULT_FVS, bpdu_guard='true')
+        db = self._db(stp_port=customized)
+        config_vlan.disable_stp_on_vlan_port(db, 'Vlan100', 'Ethernet4')
+        assert db.get_entry('STP_PORT', 'Ethernet4') == customized
+
+    def test_member_del_drops_pristine_row(self):
+        import config.vlan as config_vlan
+        import config.stp as config_stp
+        db = self._db(stp_port=config_stp.STP_PORT_DEFAULT_FVS)
+        config_vlan.disable_stp_on_vlan_port(db, 'Vlan100', 'Ethernet4')
+        assert db.get_entry('STP_PORT', 'Ethernet4') == {}
+
+    def test_member_del_keeps_pristine_row_while_still_a_member(self):
+        import config.vlan as config_vlan
+        import config.stp as config_stp
+        db = self._db(stp_port=config_stp.STP_PORT_DEFAULT_FVS,
+                      vlan_members=[('Vlan200', 'Ethernet4')])
+        config_vlan.disable_stp_on_vlan_port(db, 'Vlan100', 'Ethernet4')
+        assert db.get_entry('STP_PORT', 'Ethernet4') == config_stp.STP_PORT_DEFAULT_FVS
+
+    def test_member_add_seeds_fresh_port(self):
+        import config.stp as config_stp
+        db = self._db()
+        config_stp.interface_enable_stp(db, 'Ethernet4')
+        assert db.get_entry('STP_PORT', 'Ethernet4') == config_stp.STP_PORT_DEFAULT_FVS
+
+    def test_member_add_keeps_customized_row(self):
+        import config.stp as config_stp
+        customized = dict(config_stp.STP_PORT_DEFAULT_FVS, bpdu_guard='true')
+        db = self._db(stp_port=customized)
+        config_stp.interface_enable_stp(db, 'Ethernet4')
+        assert db.get_entry('STP_PORT', 'Ethernet4') == customized
+
+    def test_member_add_completes_disabled_row_without_reenabling(self):
+        import config.stp as config_stp
+        db = self._db(stp_port={'enabled': 'false'})
+        config_stp.interface_enable_stp(db, 'Ethernet4')
+        entry = db.get_entry('STP_PORT', 'Ethernet4')
+        assert entry['enabled'] == 'false'
+        assert entry['bpdu_guard'] == 'false'
+        assert set(entry) == set(config_stp.STP_PORT_DEFAULT_FVS)
+
+
+class TestSwitchportModes(object):
+    @pytest.mark.parametrize("tables, expected", [
+        ({}, 'routed'),
+        ({'VLAN_MEMBER': {('Vlan10', 'Ethernet4'): {'tagging_mode': 'untagged'}}}, 'access'),
+        ({'VLAN_MEMBER': {('Vlan10', 'Ethernet4'): {'tagging_mode': 'tagged'}}}, 'trunk'),
+        ({'VLAN_MEMBER': {('Vlan10', 'Ethernet4'): {'tagging_mode': 'untagged'},
+                          ('Vlan20', 'Ethernet4'): {'tagging_mode': 'tagged'}}}, 'trunk'),
+        ({'VLAN_MEMBER': {('Vlan10', 'Ethernet4'): {'tagging_mode': 'priority_tagged'}}}, 'trunk'),
+        ({'VLAN_MEMBER': {('Vlan10', 'Ethernet4'): {'tagging_mode': 'untagged'},
+                          ('Vlan20', 'Ethernet8'): {'tagging_mode': 'tagged'}}}, 'access'),
+    ])
+    def test_port_mode(self, tables, expected):
+        db = FakeStpConfigDb(tables)
+        assert clicommon.get_switchport_modes(db, ['Ethernet4']) == {'Ethernet4': expected}
+
+    def test_priority_tagged_membership_is_listed_as_tagged(self):
+        db = types.SimpleNamespace(cfgdb=FakeStpConfigDb(
+            {'VLAN_MEMBER': {('Vlan10', 'Ethernet4'): {'tagging_mode': 'priority_tagged'}}}))
+        assert clicommon.get_interface_tagged_vlan_members(db, 'Ethernet4') == '10'
+        assert clicommon.get_interface_untagged_vlan_members(db, 'Ethernet4') == ''
+
+    @pytest.mark.parametrize("key", ['Ethernet4', ('Ethernet4', '10.0.0.1/31')])
+    def test_port_router_interface_either_key_shape(self, key):
+        db = FakeStpConfigDb({'INTERFACE': {key: {}}})
+        assert clicommon.is_port_router_interface(db, 'Ethernet4')
+
+    @pytest.mark.parametrize("key", ['PortChannel1', ('PortChannel1', '10.0.0.1/31')])
+    def test_pc_router_interface_either_key_shape(self, key):
+        db = FakeStpConfigDb({'PORTCHANNEL_INTERFACE': {key: {}}})
+        assert clicommon.is_pc_router_interface(db, 'PortChannel1')
+        assert not clicommon.is_port_router_interface(db, 'PortChannel1')
+>>>>>>> 917270d3 (NOS-16717: derive the switchport mode instead of storing it (#1083))

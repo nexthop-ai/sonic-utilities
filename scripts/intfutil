@@ -25,6 +25,7 @@ except KeyError:
 from natsort import natsorted
 from tabulate import tabulate
 from utilities_common import constants
+from utilities_common.cli import get_switchport_modes
 from utilities_common import multi_asic as multi_asic_util
 from utilities_common.intf_filter import parse_interface_in_filter
 from utilities_common.netstat import table_as_json
@@ -87,30 +88,6 @@ def get_sub_port_intf_list(config_db):
         if isinstance(sub_intf, str):
             sub_intf_list.append(sub_intf)
     return sub_intf_list
-
-
-def get_interface_sw_mode_dict(config_db, front_panel_ports_list):
-    """
-    Get info from REDIS ConfigDB and create interface to swithport mode mapping
-    """
-    vlan_member_table = config_db.get_table('VLAN_MEMBER')
-
-    vlan_member_keys = []
-    for _, key in vlan_member_table:
-        vlan_member_keys.append(key)
-
-    intf_to_sw_mode_dict = {}
-    for intf_name in front_panel_ports_list:
-        port = config_db.get_entry('PORT', intf_name)
-        if "mode" in port:
-            mode = port['mode']
-        elif intf_name in vlan_member_keys:
-            mode = 'trunk'
-        else:
-            mode = 'routed'
-        intf_to_sw_mode_dict[intf_name] = mode
-
-    return intf_to_sw_mode_dict
 
 
 def config_db_vlan_port_keys_get(intf_to_sw_mode_dict, intf_to_po_dict, intf_name):
@@ -322,31 +299,6 @@ def create_po_int_dict(po_int_tuple_list):
     temp_dict = {}
     po_int_dict = tuple_to_dict(po_int_tuple_list, temp_dict)
     return po_int_dict
-
-def create_po_to_sw_mode_dict(config_db, po_int_tuple_list):
-    """
-    This function takes the portchannel to interface tuple
-    and converts that into an interface to portchannel dictionary
-    with the portchannels as the key and the mode as the values.
-    """
-    vlan_member_table = config_db.get_table('VLAN_MEMBER')
-
-    vlan_member_keys = []
-    for _, key in vlan_member_table:
-        vlan_member_keys.append(key)
-
-    po_to_sw_mode_dict = {}
-    for po, intf in po_int_tuple_list:
-        portchannel = config_db.get_entry('PORTCHANNEL', po)
-        if "mode" in portchannel:
-            mode = portchannel['mode']
-        elif po in vlan_member_keys:
-            mode = 'trunk'
-        else:
-            mode = 'routed'
-
-        po_to_sw_mode_dict[po] = mode
-    return po_to_sw_mode_dict
 
 def create_int_to_portchannel_dict(po_int_tuple_list):
     """
@@ -584,13 +536,13 @@ class IntfStatus(object):
     def get_intf_status(self):
         self.front_panel_ports_list = get_frontpanel_port_list(self.config_db)
         self.appl_db_keys = appl_db_keys_get(self.db, self.front_panel_ports_list, None)
-        self.intf_to_sw_mode_dict = get_interface_sw_mode_dict(self.config_db, self.front_panel_ports_list)
+        self.intf_to_sw_mode_dict = get_switchport_modes(self.config_db, self.front_panel_ports_list)
         self.get_raw_po_int_configdb_info = get_raw_portchannel_info(self.config_db)
         self.portchannel_list = get_portchannel_list(self.get_raw_po_int_configdb_info)
         self.po_int_tuple_list = create_po_int_tuple_list(self.get_raw_po_int_configdb_info)
         self.po_int_dict = create_po_int_dict(self.po_int_tuple_list)
         self.int_po_dict = create_int_to_portchannel_dict(self.po_int_tuple_list)
-        self.po_to_sw_mode_dict = create_po_to_sw_mode_dict(self.config_db, self.po_int_tuple_list)
+        self.po_to_sw_mode_dict = get_switchport_modes(self.config_db, [po for po, _ in self.po_int_tuple_list])
         self.portchannel_speed_dict = po_speed_dict(self.po_int_dict, self.db)
         self.portchannel_keys = self.portchannel_speed_dict.keys()
 

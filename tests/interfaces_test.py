@@ -153,13 +153,13 @@ show_interfaces_switchport_status_output = """\
 Interface        Mode
 ---------------  ------
 Ethernet0        routed
-Ethernet4        trunk
-Ethernet8        routed
-Ethernet12       routed
-Ethernet16       trunk
+Ethernet4        access
+Ethernet8        access
+Ethernet12       access
+Ethernet16       access
 Ethernet20       routed
-Ethernet24       trunk
-Ethernet28       trunk
+Ethernet24       access
+Ethernet28       access
 Ethernet36       routed
 Ethernet40       routed
 Ethernet44       routed
@@ -179,8 +179,6 @@ Ethernet96       routed
 Ethernet100      routed
 Ethernet104      routed
 Ethernet108      routed
-Ethernet116      routed
-Ethernet124      routed
 PortChannel0001  routed
 PortChannel0002  routed
 PortChannel0003  routed
@@ -192,13 +190,13 @@ show_interfaces_switchport_config_output = """\
 Interface        Mode    Untagged    Tagged
 ---------------  ------  ----------  --------
 Ethernet0        routed
-Ethernet4        trunk   1000
-Ethernet8        routed  1000
-Ethernet12       routed  1000
-Ethernet16       trunk   1000
+Ethernet4        access  1000
+Ethernet8        access  1000
+Ethernet12       access  1000
+Ethernet16       access  1000
 Ethernet20       routed
-Ethernet24       trunk   2000
-Ethernet28       trunk   2000
+Ethernet24       access  2000
+Ethernet28       access  2000
 Ethernet36       routed
 Ethernet40       routed
 Ethernet44       routed
@@ -218,8 +216,6 @@ Ethernet96       routed
 Ethernet100      routed
 Ethernet104      routed
 Ethernet108      routed
-Ethernet116      routed
-Ethernet124      routed
 PortChannel0001  routed
 PortChannel0002  routed
 PortChannel0003  routed
@@ -231,13 +227,13 @@ show_interfaces_switchport_config_in_alias_mode_output = """\
 Interface        Mode    Untagged    Tagged
 ---------------  ------  ----------  --------
 etp1             routed
-etp2             trunk   1000
-etp3             routed  1000
-etp4             routed  1000
-etp5             trunk   1000
+etp2             access  1000
+etp3             access  1000
+etp4             access  1000
+etp5             access  1000
 etp6             routed
-etp7             trunk   2000
-etp8             trunk   2000
+etp7             access  2000
+etp8             access  2000
 etp10            routed
 etp11            routed
 etp12            routed
@@ -257,8 +253,6 @@ etp25            routed
 etp26            routed
 etp27            routed
 etp28            routed
-etp30            routed
-etp32            routed
 PortChannel0001  routed
 PortChannel0002  routed
 PortChannel0003  routed
@@ -827,12 +821,6 @@ class TestInterfaces(object):
 
     def test_show_interfaces_switchport_status(self):
         runner = CliRunner()
-        db = Db()
-        result = runner.invoke(
-            config.config.commands["switchport"].commands["mode"], ["routed", "PortChannel0001"], obj=db)
-        print(result.exit_code)
-        print(result.output)
-        assert result.exit_code == 0
         result = runner.invoke(show.cli.commands["interfaces"].commands["switchport"].commands["status"])
         print(result.exit_code)
         print(result.output)
