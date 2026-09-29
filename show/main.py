@@ -136,15 +136,10 @@ def run_command(command, display_cmd=False, return_cmd=False, shell=False):
 
     proc = subprocess.Popen(command, shell=shell, text=True, stdout=subprocess.PIPE)
 
-    while True:
-        if return_cmd:
-            output = proc.communicate()[0]
-            return output
-        output = proc.stdout.readline()
-        if output == "" and proc.poll() is not None:
-            break
-        if output:
-            click.echo(output.rstrip('\n'))
+    if return_cmd:
+        return proc.communicate()[0]
+
+    clicommon.echo_child_output(proc)
 
     rc = proc.poll()
     if rc != 0:

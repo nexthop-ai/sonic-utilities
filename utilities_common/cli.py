@@ -2,9 +2,11 @@ import configparser
 import datetime
 import os
 import re
+import select
 import subprocess
 import sys
 import shutil
+import time
 
 import click
 import json
@@ -625,6 +627,82 @@ def print_output_in_alias_mode(output, index):
     click.echo(output.rstrip('\n'))
 
 
+# How long to keep reading a stopped child's leftover output. Kept short: a child that
+# outlives SIGTERM and keeps writing would otherwise hold the command up for the whole
+# budget, and a grandchild behind shell=True drains in tens of milliseconds.
+_CHILD_DRAIN_TIMEOUT = 0.25
+
+# How long to wait for a stopped child to exit before killing it.
+_CHILD_STOP_TIMEOUT = 5
+
+
+def _stop_child_on_broken_pipe(proc):
+    """Stop a child whose stdout we were relaying after our own stdout lost its reader.
+
+    Python ignores SIGPIPE, so when the reader of a pipeline goes away (e.g. '... | head')
+    the next click.echo raises BrokenPipeError and Click ends the command quietly with
+    status 1. Left alone, the child would then run into the same closed pipe and, unless it
+    is a Click program itself, die with a BrokenPipeError traceback on the shared stderr.
+
+    The child is asked to terminate, then whatever it still writes is read and discarded
+    until its stdout hits EOF: with shell=True the signal only reaches the shell and the
+    grandchildren keep writing, and a child we cannot signal keeps writing too. Reading
+    them out is best-effort: it is bounded by _CHILD_DRAIN_TIMEOUT, so a child that is
+    still writing when the budget runs out meets the closed pipe after all. The wait for
+    the child to exit is bounded separately by _CHILD_STOP_TIMEOUT, then it is killed, so
+    a misbehaving child cannot hang the command.
+    """
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        pass
+    _drain_until_eof(proc.stdout, _CHILD_DRAIN_TIMEOUT)
+    try:
+        proc.wait(timeout=_CHILD_STOP_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait()
+        except ProcessLookupError:
+            pass
+
+
+def _drain_until_eof(stream, timeout):
+    """Read and discard stream until EOF, or until timeout seconds have passed."""
+    fd = stream.fileno()
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        ready, _, _ = select.select([fd], [], [], remaining)
+        if not ready:
+            return
+        try:
+            if not os.read(fd, 65536):
+                return
+        except OSError:
+            return
+
+
+def echo_child_output(proc):
+    """Relay proc's stdout to ours line by line until it exits.
+
+    If our reader goes away first, the child is stopped before the BrokenPipeError is
+    re-raised for Click to handle (see _stop_child_on_broken_pipe).
+    """
+    try:
+        while True:
+            output = proc.stdout.readline()
+            if output == "" and proc.poll() is not None:
+                break
+            if output:
+                click.echo(output.rstrip('\n'))
+    except BrokenPipeError:
+        _stop_child_on_broken_pipe(proc)
+        raise
+
+
 def run_command_in_alias_mode(command, shell=False):
     """Run command and replace all instances of SONiC interface names
        in output with vendor-sepecific interface aliases.
@@ -635,6 +713,27 @@ def run_command_in_alias_mode(command, shell=False):
         command_str = command
     process = subprocess.Popen(command, text=True, shell=shell, stdout=subprocess.PIPE)
 
+    _echo_output_in_alias_mode(process, command_str)
+
+    rc = process.poll()
+    if rc != 0:
+        sys.exit(rc)
+
+
+def _echo_output_in_alias_mode(process, command_str):
+    """Relay process's stdout with interface names replaced by their aliases.
+
+    Self-guarding like echo_child_output: if our reader goes away, the child is stopped
+    before the BrokenPipeError is re-raised for Click to handle.
+    """
+    try:
+        _echo_output_in_alias_mode_unguarded(process, command_str)
+    except BrokenPipeError:
+        _stop_child_on_broken_pipe(process)
+        raise
+
+
+def _echo_output_in_alias_mode_unguarded(process, command_str):
     while True:
         output = process.stdout.readline()
         if output == '' and process.poll() is not None:
@@ -743,10 +842,6 @@ def run_command_in_alias_mode(command, shell=False):
                                               converted_output)
                 click.echo(converted_output.rstrip('\n'))
 
-    rc = process.poll()
-    if rc != 0:
-        sys.exit(rc)
-
 
 def run_command(command, display_cmd=False, ignore_error=False, return_cmd=False, interactive_mode=False, shell=False):
     """
@@ -794,12 +889,7 @@ def run_command(command, display_cmd=False, ignore_error=False, return_cmd=False
         return
 
     # interactive mode
-    while True:
-        output = proc.stdout.readline()
-        if output == "" and proc.poll() is not None:
-            break
-        if output:
-            click.echo(output.rstrip('\n'))
+    echo_child_output(proc)
 
     rc = proc.poll()
     if rc != 0:
