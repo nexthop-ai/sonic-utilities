@@ -52,6 +52,7 @@ from . import flow_counters
 from . import hft
 from . import gearbox
 from . import interfaces
+from . import isis
 from . import kdump
 from . import kube
 from . import muxcable
@@ -325,6 +326,7 @@ if hft_common.is_supported_platform():
     cli.add_command(hft.hft)
 cli.add_command(kdump.kdump)
 cli.add_command(interfaces.interfaces)
+cli.add_command(isis.isis)
 cli.add_command(kdump.kdump)
 cli.add_command(kube.kubernetes)
 cli.add_command(muxcable.muxcable)

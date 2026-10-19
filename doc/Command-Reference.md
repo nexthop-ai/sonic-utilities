@@ -115,6 +115,8 @@
 * [IPv6 Link Local](#ipv6-link-local)
   * [IPv6 Link Local config commands](#ipv6-link-local-config-commands)
   * [IPv6 Link Local show commands](#ipv6-link-local-show-commands)
+* [IS-IS](#is-is)
+  * [IS-IS show commands](#is-is-show-commands)
 * [Kubernetes](#Kubernetes)
   * [Kubernetes show commands](#Kubernetes-show-commands)
   * [Kubernetes config commands](#Kubernetes-config-commands)
@@ -9077,6 +9079,134 @@ This command displays the link local mode of all the interfaces.
   ```
 
 Go Back To [Beginning of the document](#) or [Beginning of this section](#ipv6-link-local)
+
+## IS-IS
+
+### IS-IS show commands
+
+These commands display the operational state of the FRR IS-IS daemon (isisd). Each command runs the matching
+`show isis ...` command in FRR, so the output is FRR's.
+
+All commands below take these options:
+
+- `--vrf <vrf_name|all>`: show the IS-IS instance of a VRF, or of all VRFs. Without it, the default VRF is shown.
+- `-n, --namespace <namespace>`: the ASIC namespace to query. Required on multi-ASIC devices.
+- `--verbose`: print the underlying vtysh command before running it.
+
+Any trailing arguments are passed to FRR unchanged, so every FRR option of the command (`json`, `detail`,
+`level-1`/`level-2`, ...) is available. `-h` lists the options FRR accepts at that point of the command.
+
+**show isis summary**
+
+This command displays a summary of the IS-IS instance: system ID, areas, SPF timers and per-level statistics.
+
+- Usage:
+  ```
+  show isis summary [json] [--vrf <vrf_name|all>] [-n <namespace>]
+  ```
+
+- Example:
+  ```
+  admin@sonic:~$ show isis summary
+  admin@sonic:~$ show isis summary json --vrf all
+  ```
+
+**show isis interface**
+
+This command displays the interfaces IS-IS runs on, with their circuit type, level and state.
+
+- Usage:
+  ```
+  show isis interface [detail|<interface_name>] [json] [--vrf <vrf_name|all>] [-n <namespace>]
+  ```
+
+- Example:
+  ```
+  admin@sonic:~$ show isis interface
+  admin@sonic:~$ show isis interface Ethernet0 json
+  ```
+
+**show isis neighbor**
+
+This command displays IS-IS adjacencies.
+
+- Usage:
+  ```
+  show isis neighbor [detail|<system_id>] [json] [--vrf <vrf_name|all>] [-n <namespace>]
+  ```
+
+- Example:
+  ```
+  admin@sonic:~$ show isis neighbor
+  admin@sonic:~$ show isis neighbor detail --vrf Vrf1
+  ```
+
+**show isis hostname**
+
+This command displays the system ID to dynamic hostname mapping (RFC 5301).
+
+- Usage:
+  ```
+  show isis hostname [--vrf <vrf_name|all>] [-n <namespace>]
+  ```
+
+**show isis database**
+
+This command displays the IS-IS link state database.
+
+- Usage:
+  ```
+  show isis database [detail] [<lsp_id>] [json] [--vrf <vrf_name|all>] [-n <namespace>]
+  ```
+
+- Example:
+  ```
+  admin@sonic:~$ show isis database
+  admin@sonic:~$ show isis database detail sonic.00-00
+  ```
+
+**show isis topology**
+
+This command displays the IS-IS SPF topology (paths to other IS-IS routers).
+
+- Usage:
+  ```
+  show isis topology [level-1|level-2] [json] [--vrf <vrf_name|all>] [-n <namespace>]
+  ```
+
+**show isis route**
+
+This command displays the routes computed by IS-IS SPF. `backup` shows the fast reroute backup paths.
+
+- Usage:
+  ```
+  show isis route [level-1|level-2] [backup] [json] [--vrf <vrf_name|all>] [-n <namespace>]
+  ```
+
+- Example:
+  ```
+  admin@sonic:~$ show isis route level-2
+  ```
+
+**show isis spf-delay-ietf**
+
+This command displays the state of the RFC 8405 SPF back-off algorithm, when it is configured.
+
+- Usage:
+  ```
+  show isis spf-delay-ietf [--vrf <vrf_name|all>] [-n <namespace>]
+  ```
+
+**show isis fast-reroute summary**
+
+This command displays the IS-IS fast reroute (LFA) coverage summary.
+
+- Usage:
+  ```
+  show isis fast-reroute summary [level-1|level-2] [--vrf <vrf_name|all>] [-n <namespace>]
+  ```
+
+Go Back To [Beginning of the document](#) or [Beginning of this section](#is-is)
 
 ## Kubernetes
 
