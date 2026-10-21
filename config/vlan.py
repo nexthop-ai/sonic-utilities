@@ -3,6 +3,7 @@ import utilities_common.cli as clicommon
 import utilities_common.dhcp_relay_util as dhcp_relay_util
 import utilities_common.multi_asic as multi_asic_util
 from sonic_py_common import multi_asic
+from utilities_common.router_interface import router_interface_refusal
 
 from jsonpatch import JsonPatchConflict
 from time import sleep
@@ -375,7 +376,15 @@ def add_vlan_member(ctx, vid, port, untagged, multiple, except_flag):
             if (is_port and clicommon.is_port_router_interface(db.cfgdb, port)) or \
                 (not is_port and clicommon.is_pc_router_interface(
                     db.cfgdb, port)):  # TODO: MISSING CONSTRAINT IN YANG MODEL
+<<<<<<< HEAD
                 ctx.fail("{} is a router interface!".format(port))
+=======
+                ctx.fail(router_interface_refusal(
+                    db.cfgdb, 'INTERFACE' if is_port else 'PORTCHANNEL_INTERFACE', port, "adding it to a VLAN",
+                    get_namespace_from_context(ctx)))
+            if clicommon.is_vlan_sub_interface_parent(db.cfgdb, port):
+                ctx.fail("{} has VLAN sub-interfaces. Cannot add it to a vlan".format(port))
+>>>>>>> 1687a0c5 (NOS-5413: say why a port is routed when refusing it as a VLAN member, port channel member or mirror destination (#1131))
             portchannel_member_table = db.cfgdb.get_table('PORTCHANNEL_MEMBER')
             if (is_port and clicommon.interface_is_in_portchannel(
                  portchannel_member_table, port)):  # TODO: MISSING CONSTRAINT IN YANG MODEL

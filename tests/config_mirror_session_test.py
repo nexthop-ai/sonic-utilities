@@ -240,7 +240,9 @@ def test_mirror_session_span_add():
             config.config.commands["mirror_session"].commands["span"].commands["add"],
             ["test_session", "Ethernet0", "Ethernet4", "rx", "100"])
     assert result.exit_code != 0
-    assert "Error: Destination Interface Ethernet0 is a L3 interface" in result.stdout
+    assert ("Error: Ethernet0 is a router interface (IP address 14.14.0.1/24); "
+            "run 'config interface ip remove Ethernet0 14.14.0.1/24' before using it as a mirror destination"
+            ) in result.stdout
 
     # Verify destination port not Portchannel
     result = runner.invoke(

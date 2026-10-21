@@ -232,7 +232,9 @@ class TestIPv6LinkLocal(object):
         result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["add"], ["4000", "Ethernet40"], obj=obj)
         print(result.output)
         assert result.exit_code != 0
-        assert 'Error: Ethernet40 is a router interface!' in result.output
+        assert ("Error: Ethernet40 is a router interface (IPv6 link-local-only enabled); "
+                "run 'config interface ipv6 disable use-link-local-only Ethernet40' before adding it to a VLAN"
+                ) in result.output
 
     @classmethod
     def teardown_class(cls):

@@ -44,6 +44,13 @@ from utilities_common.general import load_db_config, load_module_from_source
 from .validated_config_db_connector import ValidatedConfigDBConnector
 import utilities_common.multi_asic as multi_asic_util
 from utilities_common.flock import try_lock
+<<<<<<< HEAD
+=======
+from utilities_common.constants import CONFIG_DB_QUARANTINE_SUFFIX, DEFAULT_VRF, SNMP_AGENT_LEGACY_DEFAULT_VRF
+from utilities_common.router_interface_conflicts import find_router_interface_vlan_conflicts, key_parts
+from utilities_common.router_interface import router_interface_refusal
+from utilities_common.chassis import is_bmc
+>>>>>>> 1687a0c5 (NOS-5413: say why a port is routed when refusing it as a VLAN member, port channel member or mirror destination (#1131))
 from utilities_common import hft as hft_common
 
 from .utils import log
@@ -1515,7 +1522,8 @@ def validate_mirror_session_config(config_db, session_name, dst_port, src_port, 
             ctx.fail("Destination Interface {} has portchannel config".format(dst_port))
 
         if clicommon.is_port_router_interface(config_db, dst_port):
-            ctx.fail("Destination Interface {} is a L3 interface".format(dst_port))
+            ctx.fail(router_interface_refusal(config_db, 'INTERFACE', dst_port, "using it as a mirror destination",
+                                              get_port_namespace(dst_port)))
 
         namespace_set.add(get_port_namespace(dst_port))
 
@@ -3175,6 +3183,7 @@ def add_portchannel_member(ctx, portchannel_name, port_name):
         if is_portchannel_present_in_db(db, portchannel_name) is False:
             ctx.fail("{} is not present.".format(portchannel_name))
 
+<<<<<<< HEAD
         # Don't allow a port to be member of port channel if it is configured with an IP address
         for key,value in db.get_table('INTERFACE').items():
             if type(key) == tuple:
@@ -3182,6 +3191,16 @@ def add_portchannel_member(ctx, portchannel_name, port_name):
             if key == port_name:
                 ctx.fail(" {} has ip address configured".format(port_name))  # TODO: MISSING CONSTRAINT IN YANG MODEL
                 return
+=======
+        # A port-channel member must be a clean physical port. Reject any port that
+        # carries L3 configuration — present in INTERFACE as an interface-level row
+        # (VRF/attributes) and/or as address rows.
+        for key in db.get_table('INTERFACE'):
+            name = (key if type(key) == tuple else (key, ))[0]
+            if name == port_name:
+                ctx.fail(router_interface_refusal(db, 'INTERFACE', port_name, "adding it to a port channel",
+                                                  ctx.obj.get('namespace')))
+>>>>>>> 1687a0c5 (NOS-5413: say why a port is routed when refusing it as a VLAN member, port channel member or mirror destination (#1131))
 
         for key in db.get_keys('VLAN_SUB_INTERFACE'):
             if type(key) == tuple:

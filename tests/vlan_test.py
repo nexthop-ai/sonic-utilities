@@ -519,7 +519,10 @@ class TestVlan(object):
         print(result.exit_code)
         print(result.output)
         assert result.exit_code != 0
-        assert "Error: PortChannel0001 is a router interface!" in result.output
+        assert ("Error: PortChannel0001 is a router interface (IP addresses 10.0.0.56/31, FC00::71/126); "
+                "run 'config interface ip remove PortChannel0001 10.0.0.56/31', then "
+                "'config interface ip remove PortChannel0001 FC00::71/126' before adding it to a VLAN"
+                ) in result.output
 
     def test_config_vlan_add_vlan_with_multiple_vlanids(self, mock_restart_dhcp_relay_service):
         runner = CliRunner()
@@ -750,7 +753,88 @@ class TestVlan(object):
         print(result.exit_code)
         print(result.output)
         assert result.exit_code != 0
+<<<<<<< HEAD
         assert "Error: etp33 does not exist" in result.output
+=======
+        assert ("Error: Ethernet0 is a router interface (IP address 14.14.0.1/24); "
+                "run 'config interface ip remove Ethernet0 14.14.0.1/24' before adding it to a VLAN"
+                ) in result.output
+
+    @pytest.mark.parametrize("entries, message", [
+        ({'Ethernet52': {'vrf_name': 'Vrf1'}, ('Ethernet52', '10.1.1.1/30'): {}},
+         "Ethernet52 is a router interface (bound to VRF Vrf1); "
+         "run 'config interface vrf unbind Ethernet52' before adding it to a VLAN"),
+        ({'Ethernet52': {'vnet_name': 'Vnet_2000'}},
+         "Ethernet52 is a router interface (bound to VNET Vnet_2000); "
+         "run 'config interface vrf unbind Ethernet52' before adding it to a VLAN"),
+        ({'Ethernet52': {'ipv6_use_link_local_only': 'enable'}, ('Ethernet52', '10.1.1.1/30'): {}},
+         "Ethernet52 is a router interface (IP address 10.1.1.1/30; IPv6 link-local-only enabled); "
+         "run 'config interface ip remove Ethernet52 10.1.1.1/30', then "
+         "'config interface ipv6 disable use-link-local-only Ethernet52' before adding it to a VLAN"),
+        ({'Ethernet52': {'vrf_name': 'Vrf1', 'dhcp_servers': ['192.0.2.1']}, ('Ethernet52', '10.1.1.1/30'): {}},
+         "Ethernet52 is a router interface (bound to VRF Vrf1; DHCP relay server 192.0.2.1); "
+         "run 'config interface vrf unbind Ethernet52', then "
+         "'config interface dhcp_relay del Ethernet52 192.0.2.1' before adding it to a VLAN"),
+        ({'Ethernet52': {'dhcp_servers': ['192.0.2.1'], 'dhcpv6_servers': ['2001:db8::1']}},
+         "Ethernet52 is a router interface (DHCP relay servers 192.0.2.1, 2001:db8::1); "
+         "run 'config interface dhcp_relay del Ethernet52 192.0.2.1 2001:db8::1' before adding it to a VLAN"),
+    ])
+    def test_config_vlan_add_member_names_what_makes_it_routed(self, entries, message):
+        runner = CliRunner()
+        db = Db()
+        for key, value in entries.items():
+            db.cfgdb.set_entry('INTERFACE', key, value or {'NULL': 'NULL'})
+        result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["add"],
+                               ["2000", "Ethernet52"], obj=db)
+        print(result.exit_code)
+        print(result.output)
+        assert result.exit_code != 0
+        assert "Error: " + message in result.output
+
+    @pytest.mark.parametrize("entry, message", [
+        ({'loopback_action': 'drop', 'ipv6_use_link_local_only': 'disable'},
+         "Ethernet52 is a router interface (INTERFACE has an entry for it with "
+         "ipv6_use_link_local_only=disable, loopback_action=drop)"),
+        ({'NULL': 'NULL'}, "Ethernet52 is a router interface (INTERFACE has an empty entry for it)"),
+    ])
+    def test_config_vlan_add_member_with_bare_router_interface_entry(self, entry, message):
+        runner = CliRunner()
+        db = Db()
+        db.cfgdb.set_entry('INTERFACE', 'Ethernet52', entry)
+        result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["add"],
+                               ["2000", "Ethernet52"], obj=db)
+        print(result.exit_code)
+        print(result.output)
+        assert result.exit_code != 0
+        assert "Error: " + message in result.output
+
+    def test_config_vlan_add_sub_interface_parent_member(self):
+        # Ethernet36 carries the short-name sub-interface Eth36.10, so it is routed and cannot sit in a VLAN.
+        runner = CliRunner()
+        result = runner.invoke(config.config.commands["vlan"].commands["member"].commands["add"],
+                               ["2000", "Ethernet36"])
+        print(result.exit_code)
+        print(result.output)
+        assert result.exit_code != 0
+        assert "Error: Ethernet36 has VLAN sub-interfaces. Cannot add it to a vlan" in result.output
+
+    def test_is_vlan_sub_interface_parent(self):
+        db = Db()
+        # Long name (Ethernet0.10), short name (Eth36.10) and short PortChannel name (Po0001.10).
+        assert clicommon.is_vlan_sub_interface_parent(db.cfgdb, "Ethernet0")
+        assert clicommon.is_vlan_sub_interface_parent(db.cfgdb, "Ethernet36")
+        assert clicommon.is_vlan_sub_interface_parent(db.cfgdb, "PortChannel0001")
+        # Ethernet3 is a name prefix of Eth36's parent, not its parent.
+        assert not clicommon.is_vlan_sub_interface_parent(db.cfgdb, "Ethernet3")
+        assert not clicommon.is_vlan_sub_interface_parent(db.cfgdb, "Ethernet4")
+
+    def test_is_vlan_sub_interface_parent_address_rows_only(self):
+        # A sub-interface may exist only as address rows; those still make the port a parent.
+        cfgdb = mock.Mock()
+        cfgdb.get_keys.return_value = [("Eth64.10", "10.0.0.1/24")]
+        assert clicommon.is_vlan_sub_interface_parent(cfgdb, "Ethernet64")
+        assert not clicommon.is_vlan_sub_interface_parent(cfgdb, "Ethernet6")
+>>>>>>> 1687a0c5 (NOS-5413: say why a port is routed when refusing it as a VLAN member, port channel member or mirror destination (#1131))
 
     def test_show_port_vlan_etp33_in_alias_mode(self):
         runner = CliRunner()
