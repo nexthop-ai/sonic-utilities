@@ -202,6 +202,59 @@ class TestConfigMgmt(TestCase):
 
         return
 
+    def test_getPortOidMap_waits_for_ports(self):
+        '''
+        Verify that _getPortOidMap() waits till orchagent has put every port in
+        COUNTERS_PORT_NAME_MAP: a breakout right after another one can find the
+        new ports not created yet.
+        '''
+        partial = ({'Ethernet8': '1000000000001'}, {})
+        full = ({'Ethernet8': '1000000000001', 'Ethernet10': '1000000000002'}, {})
+        with mock.patch.object(config_mgmt.port_util, 'get_interface_oid_map',
+                               side_effect=[partial, partial, full]) as getMap, \
+                mock.patch.object(config_mgmt, 'tsleep') as sleep:
+            portMap = config_mgmt.ConfigMgmtDPB._getPortOidMap(
+                mock.MagicMock(), db=mock.MagicMock(), ports=['Ethernet8', 'Ethernet10'], timeout=60)
+
+        assert portMap == full[0]
+        assert getMap.call_count == 3
+        assert sleep.call_count == 2
+        return
+
+    def test_getPortOidMap_timeout(self):
+        '''
+        Verify that _getPortOidMap() gives up after timeout and names the ports.
+        '''
+        partial = ({'Ethernet8': '1000000000001'}, {})
+        with mock.patch.object(config_mgmt.port_util, 'get_interface_oid_map',
+                               return_value=partial), \
+                mock.patch.object(config_mgmt, 'tsleep'):
+            with pytest.raises(Exception, match="Ethernet10"):
+                config_mgmt.ConfigMgmtDPB._getPortOidMap(
+                    mock.MagicMock(), db=mock.MagicMock(), ports=['Ethernet8', 'Ethernet10'], timeout=3)
+        return
+
+    def test_breakOutPort_ports_not_created(self):
+        '''
+        Verify that breakOutPort() fails without touching Config DB when the
+        ports to delete are never created, instead of deleting them and then
+        failing.
+        '''
+        cmdpb = mock.MagicMock()
+        cmdpb._deletePorts.return_value = ({'PORT': {'Ethernet8': None}}, None, True)
+        cmdpb._addPorts.return_value = ({'PORT': {'Ethernet8': {'lanes': '73,74,75,76'}}}, True)
+        cmdpb._getPortOidMap.side_effect = \
+            Exception("Ports ['Ethernet8'] are not created in ASIC DB after 60 secs")
+        with mock.patch.object(config_mgmt, 'SonicV2Connector'):
+            deps, ret = config_mgmt.ConfigMgmtDPB.breakOutPort(
+                cmdpb, delPorts=['Ethernet8'], portJson={'PORT': {'Ethernet8': {}}})
+
+        assert (deps, ret) == (None, False)
+        cmdpb._shutdownIntf.assert_not_called()
+        cmdpb.writeConfigDB.assert_not_called()
+        cmdpb._verifyAsicDB.assert_not_called()
+        return
+
     def tearDown(self):
         try:
             os.remove(config_mgmt.CONFIG_DB_JSON_FILE)
@@ -232,6 +285,7 @@ class TestConfigMgmt(TestCase):
         cmdpb = config_mgmt.ConfigMgmtDPB(source=config_mgmt.CONFIG_DB_JSON_FILE)
         # mock funcs
         cmdpb.writeConfigDB = mock.MagicMock(return_value=True)
+        cmdpb._getPortOidMap = mock.MagicMock(return_value=dict())
         cmdpb._verifyAsicDB = mock.MagicMock(return_value=True)
         from .mock_tables import dbconnector
         return cmdpb

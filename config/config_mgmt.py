@@ -374,6 +374,33 @@ class ConfigMgmtDPB(ConfigMgmt):
 
         return True
 
+    def _getPortOidMap(self, db, ports, timeout):
+        '''
+        Wait till every port in the list has an OID in COUNTERS_PORT_NAME_MAP,
+        Keep on trying till timeout period. orchagent adds a port there only
+        once the port is created in ASIC, while a breakout returns as soon as
+        it has written the new ports to Config DB, so a breakout issued right
+        after another one can find its ports not created yet.
+
+        Parameters:
+            db (SonicV2Connector): database.
+            ports (list): port list to look up.
+            timeout (int): timeout period
+
+        Returns:
+            (dict): port to OID map.
+        '''
+        for waitTime in range(timeout):
+            if_name_map, _ = port_util.get_interface_oid_map(db, blocking=False)
+            missing = [port for port in ports if port not in if_name_map]
+            if not missing:
+                return if_name_map
+            self.sysLog(logLevel=syslog.LOG_DEBUG, msg='Ports not in \
+                COUNTERS_PORT_NAME_MAP yet: {}'.format(missing))
+            tsleep(1)
+
+        raise Exception("Ports {} are not created in ASIC DB after {} secs".format(missing, timeout))
+
     def _verifyAsicDB(self, db, ports, portMap, timeout):
         '''
         Verify in the Asic DB that port are deleted, Keep on trying till timeout
@@ -442,9 +469,11 @@ class ConfigMgmtDPB(ConfigMgmt):
             if ret == False:
                 return None, ret
 
-            # Save Port OIDs Mapping Before Deleting Port
+            # Save Port OIDs Mapping Before Deleting Port, once every port is
+            # created. Config DB is untouched so far, so a timeout here leaves
+            # the ports as they are.
             dataBase = SonicV2Connector(host="127.0.0.1")
-            if_name_map, if_oid_map = port_util.get_interface_oid_map(dataBase)
+            if_name_map = self._getPortOidMap(db=dataBase, ports=delPorts, timeout=MAX_WAIT)
             self.sysLog(syslog.LOG_DEBUG, 'if_name_map {}'.format(if_name_map))
 
             # If we are here, then get ready to update the Config DB as below:
