@@ -2521,6 +2521,170 @@ class TestBulkLeafListMoveGenerator(unittest.TestCase):
         self.assertCountEqual(ex_ops, moves_ops)
 
 
+<<<<<<< HEAD
+=======
+class TestBulkLowLevelMoveGenerator(unittest.TestCase):
+    """Bulk low-level moves for entries that contain a leaf-list.
+
+    A leaf-list is replaced as a whole value, exactly like a scalar leaf, so its
+    presence must not disqualify the entry from bulk grouping. Before this was
+    handled, a single leaf-list anywhere in an entry silenced this generator for
+    that entry entirely and every field change fell back to one move each.
+    """
+    def setUp(self):
+        path_addressing = PathAddressing()
+        self.generator = ps.BulkLowLevelMoveGenerator(path_addressing)
+
+    def test_generate_replace__entry_has_leaf_list__scalars_still_grouped(self):
+        """Two scalars differ in an entry that also carries an (unchanged) leaf-list."""
+        self.verify_replace(
+            current={"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_A",
+                                             "route_operation": "permit",
+                                             "set_ext_community_inline": ["color:00:401"]}}},
+            target={"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_B",
+                                            "route_operation": "deny",
+                                            "set_ext_community_inline": ["color:00:401"]}}},
+            ex_ops=[{"op": "replace", "path": "/ROUTE_MAP/RM|10/match_prefix_set", "value": "SET_B"},
+                    {"op": "replace", "path": "/ROUTE_MAP/RM|10/route_operation", "value": "deny"}])
+
+    def test_generate_replace__leaf_list_itself_differs__included_in_group(self):
+        """A differing leaf-list is replaced as a whole value alongside scalar changes."""
+        self.verify_replace(
+            current={"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_A",
+                                             "set_ext_community_inline": ["color:00:401"]}}},
+            target={"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_B",
+                                            "set_ext_community_inline": ["color:00:402"]}}},
+            ex_ops=[{"op": "replace", "path": "/ROUTE_MAP/RM|10/match_prefix_set", "value": "SET_B"},
+                    {"op": "replace", "path": "/ROUTE_MAP/RM|10/set_ext_community_inline",
+                     "value": ["color:00:402"]}])
+
+    def test_generate_replace__entry_has_list_of_dicts__no_moves(self):
+        """Lists of non-scalars are still out of scope, so the entry is skipped."""
+        self.verify_replace(
+            current={"TABLE": {"KEY": {"field": "a", "items": [{"x": 1}]}}},
+            target={"TABLE": {"KEY": {"field": "b", "items": [{"x": 1}]}}},
+            ex_ops=[])
+
+    def test_generate_replace__single_change_below_min_moves__no_moves(self):
+        """min_moves defaults to 2, so one differing field alone is not a bulk move."""
+        self.verify_replace(
+            current={"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_A",
+                                             "set_ext_community_inline": ["color:00:401"]}}},
+            target={"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_B",
+                                            "set_ext_community_inline": ["color:00:401"]}}},
+            ex_ops=[])
+
+    def test_generate_remove__entry_has_leaf_list__scalars_still_grouped(self):
+        """The predicate gates removals too, not only replacements."""
+        self.verify(
+            self.generator.generate_remove,
+            current={"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_A",
+                                             "route_operation": "permit",
+                                             "set_ext_community_inline": ["color:00:401"]}}},
+            target={"ROUTE_MAP": {"RM|10": {"set_ext_community_inline": ["color:00:401"]}}},
+            ex_ops=[{"op": "remove", "path": "/ROUTE_MAP/RM|10/match_prefix_set"},
+                    {"op": "remove", "path": "/ROUTE_MAP/RM|10/route_operation"}])
+
+    def test_generate_add__entry_has_leaf_list__scalars_still_grouped(self):
+        """And additions."""
+        self.verify(
+            self.generator.generate_add,
+            current={"ROUTE_MAP": {"RM|10": {"set_ext_community_inline": ["color:00:401"]}}},
+            target={"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_A",
+                                            "route_operation": "permit",
+                                            "set_ext_community_inline": ["color:00:401"]}}},
+            ex_ops=[{"op": "add", "path": "/ROUTE_MAP/RM|10/match_prefix_set", "value": "SET_A"},
+                    {"op": "add", "path": "/ROUTE_MAP/RM|10/route_operation", "value": "permit"}])
+
+    def test_generate_add__suspended_while_another_generate_runs__moves_built_against_own_diff(self):
+        """The DFS sorter resumes a suspended generate() after running generate() on deeper states.
+
+        Each move must be built against the diff its own generate() call received, or a
+        resumed generator addresses a config its moves are then validated against and
+        jsonpatch fails with 'member ... not found'.
+        """
+        current = {"T": {"R1": {"a": "1"}, "R2": {"a": "1"}}}
+        target = {"T": {"R1": {"a": "1", "b": "2"}, "R2": {"a": "1", "b": "2"}}}
+        suspended = self.generator.generate_add(ps.Diff(current, target), min_moves=1)
+        first = next(suspended).get_jsonpatch()
+
+        # A second generate_add() on the same instance, for a state where R2 does not exist
+        # yet. A move for R2 built against that state is lifted to the row level.
+        deeper = ps.Diff({"T": {"R1": {"a": "1"}}}, target)
+        deeper_moves = [list(m.get_jsonpatch()) for m in self.generator.generate_add(deeper, min_moves=1)]
+
+        second = next(suspended).get_jsonpatch()
+        self.assertEqual([[{"op": "add", "path": "/T/R1/b", "value": "2"}]], deeper_moves)
+        self.assertEqual([{"op": "add", "path": "/T/R1/b", "value": "2"}], list(first))
+        self.assertEqual([{"op": "add", "path": "/T/R2/b", "value": "2"}], list(second))
+
+    def verify(self, generate, current, target, ex_ops):
+        diff = ps.Diff(current, target)
+        moves_ops = []
+        for move in generate(diff):
+            moves_ops.extend(move.get_jsonpatch())
+        self.assertCountEqual(ex_ops, moves_ops)
+
+    def verify_replace(self, current, target, ex_ops):
+        diff = ps.Diff(current, target)
+        moves_ops = []
+        for move in self.generator.generate_replace(diff):
+            moves_ops.extend(move.get_jsonpatch())
+        self.assertCountEqual(ex_ops, moves_ops)
+
+
+class TestBulkKeyGroupLowLevelMoveGenerator(unittest.TestCase):
+    """Grouping the same field change across many keys of one table."""
+    def setUp(self):
+        path_addressing = PathAddressing()
+        self.generator = ps.BulkKeyGroupLowLevelMoveGenerator(path_addressing)
+
+    def test_generate__same_field_across_keys_with_leaf_lists__single_group(self):
+        """One field changed in each of three keys that also carry leaf-lists.
+
+        This is the shape of a route-map retargeting: N sequences, each keeping its
+        leaf-list and changing one scalar. All of it belongs in one group.
+        """
+        current = {"ROUTE_MAP": {
+            "RM|10": {"match_prefix_set": "SET_A1", "set_ext_community_inline": ["color:00:401"]},
+            "RM|20": {"match_prefix_set": "SET_A2", "set_ext_community_inline": ["color:00:402"]},
+            "RM|30": {"match_prefix_set": "SET_A3", "set_ext_community_inline": ["color:00:403"]}}}
+        target = copy.deepcopy(current)
+        for index, key in enumerate(("RM|10", "RM|20", "RM|30"), start=1):
+            target["ROUTE_MAP"][key]["match_prefix_set"] = "SET_B{}".format(index)
+
+        diff = ps.Diff(current, target)
+        groups = [group for group in self.generator.generate(diff) if list(group.get_jsonpatch())]
+
+        self.assertEqual(1, len(groups), "the three key changes belong in a single group")
+        self.assertCountEqual(
+            [{"op": "replace", "path": "/ROUTE_MAP/RM|10/match_prefix_set", "value": "SET_B1"},
+             {"op": "replace", "path": "/ROUTE_MAP/RM|20/match_prefix_set", "value": "SET_B2"},
+             {"op": "replace", "path": "/ROUTE_MAP/RM|30/match_prefix_set", "value": "SET_B3"}],
+            list(groups[0].get_jsonpatch()))
+
+    def test_generate__keys_from_different_tables__separate_groups(self):
+        """Merging is per parent table: a different parentTableName() ends the group."""
+        current = {"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_A1", "route_operation": "permit"},
+                                 "RM|20": {"match_prefix_set": "SET_A2", "route_operation": "permit"}},
+                   "ACL_RULE": {"T|R1": {"PRIORITY": "10", "PACKET_ACTION": "FORWARD"}}}
+        target = copy.deepcopy(current)
+        target["ROUTE_MAP"]["RM|10"]["match_prefix_set"] = "SET_B1"
+        target["ROUTE_MAP"]["RM|20"]["match_prefix_set"] = "SET_B2"
+        target["ACL_RULE"]["T|R1"]["PRIORITY"] = "20"
+
+        diff = ps.Diff(current, target)
+        groups = [group for group in self.generator.generate(diff) if list(group.get_jsonpatch())]
+        tables = [group.parentTableName() for group in groups]
+
+        self.assertNotIn("/ACL_RULE/T", [t for t in tables if t == "/ROUTE_MAP/RM"],
+                         "the two tables must not share a group")
+        for group in groups:
+            paths = {op["path"].split("/")[1] for op in group.get_jsonpatch()}
+            self.assertEqual(1, len(paths), f"group spans more than one table: {paths}")
+
+
+>>>>>>> b8f0e4b0 (NOS-20376: [gcu] build each low-level move against the diff its generate() call received (#1289))
 class TestLowLevelMoveGenerator(unittest.TestCase):
     def setUp(self):
         path_addressing = PathAddressing()
@@ -2738,6 +2902,26 @@ class TestLowLevelMoveGenerator(unittest.TestCase):
                            {'op': 'remove', 'path': '/VLAN_MEMBER/Vlan100|Ethernet2/tagging_mode'},
                            {'op': 'remove', 'path': '/VLAN_MEMBER/Vlan100|Ethernet3/tagging_mode'}],
                           moves)
+
+    def test_generate__suspended_while_another_generate_runs__moves_built_against_own_diff(self):
+        """The DFS sorter resumes a suspended generate() after running generate() on deeper states.
+
+        Each move must be built against the diff its own generate() call received. A move
+        built against a deeper state's config addresses a row that does not exist in the
+        state it is validated against, and jsonpatch fails with 'member ... not found'.
+        """
+        current = {"T": {"R1": {"a": "1"}}}
+        target = {"T": {"R1": {"a": "1"}, "R2": {"b": "2", "c": "3"}}}
+        suspended = self.generator.generate(ps.Diff(current, target))
+        first = next(suspended).get_jsonpatch()
+
+        # A deeper state where R2 already exists: field-level paths are valid there, not above.
+        deeper = ps.Diff({"T": {"R1": {"a": "1"}, "R2": {"b": "2"}}}, target)
+        list(self.generator.generate(deeper))
+
+        second = next(suspended).get_jsonpatch()
+        self.assertEqual([{"op": "add", "path": "/T/R2", "value": {"b": "2"}}], list(first))
+        self.assertEqual([{"op": "add", "path": "/T/R2", "value": {"c": "3"}}], list(second))
 
     def verify(self, tc_ops=None, cc_ops=None, ex_ops=None):
         """
@@ -3602,6 +3786,74 @@ class DeleteRefsMoveExtender(unittest.TestCase):
             moves_ops.extend(move.patch)
         self.assertCountEqual(ex_ops, moves_ops)
 
+
+class TestDfsSorterWithSuspendedGenerators(unittest.TestCase):
+    """DFS backtracking resumes outer generate() calls after deeper ones ran (NOS-20376).
+
+    The validator below mirrors NoDependencyMoveValidator for a path that cannot be
+    converted to an xpath: an add is checked by its own path, a replace by the paths it
+    adds. TELEMETRY_CLIENT|Global is such a path while NOS-20577 is open, because
+    sonic-yang resolves the Global container as a list entry. So Global can be created by
+    the add that creates the table, whose path is the table, but never added to a table
+    that already exists.
+
+    The existing-table case is the regression guard: every alternative is rejected, the
+    sorter backtracks, and the resumed outer generators must keep building moves against
+    their own state or the sort aborts with a jsonpatch error. The created-table case
+    sorts without backtracking and passes with or without the fix; it pins that Global
+    arrives in the add that creates the table.
+    """
+    class RejectPathsUnderGlobal:
+        def __init__(self):
+            # Only _get_paths is used, which needs no config wrapper.
+            self.no_dependency_validator = ps.NoDependencyMoveValidator(PathAddressing(), Mock())
+
+        def validate(self, group, diff, simulated_config):
+            for move in group:
+                paths = [move.path]
+                if move.op_type == OperationType.REPLACE:
+                    _, paths = self.no_dependency_validator._get_paths(diff.current_config, simulated_config, [])
+                for path in paths:
+                    if path == "/T/Global" or path.startswith("/T/Global/"):
+                        return False, f"{path} cannot be converted to an xpath"
+            return True, None
+
+    GLOBAL = {"src_ip": "10.0.0.2"}
+    DESTINATION_GROUP = {"dst_addr": "10.0.0.1:8080"}
+    SUBSCRIPTION = {"dst_group": "DCI", "path_target": "COUNTERS_DB", "report_type": "periodic"}
+
+    def setUp(self):
+        path_addressing = PathAddressing()
+        move_wrapper = ps.MoveWrapper(move_generators=[ps.LowLevelMoveGenerator(path_addressing)],
+                                      move_non_extendable_generators=[ps.KeyLevelMoveGenerator(path_addressing)],
+                                      move_extenders=[ps.UpperLevelMoveExtender()],
+                                      move_validators=[self.RejectPathsUnderGlobal()])
+        self.sorter = ps.DfsSorter(move_wrapper)
+
+    def test_sort__table_created_with_global_and_subscription__global_added_with_the_table(self):
+        current = {}
+        target = {"T": {"Global": self.GLOBAL, "DG|DCI": self.DESTINATION_GROUP, "Sub|s": self.SUBSCRIPTION}}
+
+        moves = self.sorter.sort(ps.Diff(current, target))
+
+        self.assertIsNotNone(moves)
+        config = current
+        for move in moves:
+            config = move.apply(config)
+        self.assertEqual(target, config)
+        first_op = list(moves[0].get_jsonpatch())[0]
+        self.assertEqual("/T", first_op["path"])
+        self.assertIn("Global", first_op["value"])
+
+    def test_sort__global_added_to_existing_table__returns_none_without_raising(self):
+        current = {"T": {"DG|DCI": self.DESTINATION_GROUP}}
+        target = {"T": {"DG|DCI": self.DESTINATION_GROUP, "Global": self.GLOBAL, "Sub|s": self.SUBSCRIPTION}}
+
+        moves = self.sorter.sort(ps.Diff(current, target))
+
+        self.assertIsNone(moves)
+
+
 class TestSortAlgorithmFactory(unittest.TestCase):
     def test_dfs_sorter(self):
         self.verify(ps.Algorithm.DFS, ps.DfsSorter)
@@ -3728,6 +3980,31 @@ class TestPatchSorter(unittest.TestCase):
 
             if notfound_substrings:
                 self.fail(f"Did not find the substrings {notfound_substrings} in the error: '{error}'")
+
+    def test_patch_sorter__telemetry_client_created_with_global_and_subscription__sorts(self):
+        """The patch from NOS-20376: no TELEMETRY_CLIENT yet, one add creates Global, a
+        DestinationGroup and a Subscription. While NOS-20577 is open Global cannot be
+        addressed by its own path, so the sorter has to create it with the table and
+        backtrack through every alternative, which resumes generators suspended at the
+        outer levels. Closing that ticket may change which moves do that, not the
+        outcome, so only the outcome is pinned.
+        """
+        current_config = {}
+        patch = jsonpatch.JsonPatch([{"op": "add", "path": "/TELEMETRY_CLIENT", "value": {
+            "Global": {"src_ip": "10.249.6.18"},
+            "DestinationGroup|DCI": {"dst_addr": "10.10.49.57:8080"},
+            "Subscription|srv6_counters": {
+                "dst_group": "DCI", "path_target": "COUNTERS_DB",
+                "paths": "SRV6_SID_LIST_COUNTER_TABLE,SR_POLICY_CP_COUNTER_TABLE,SR_POLICY_COUNTER_TABLE",
+                "report_type": "periodic", "report_interval": "30000"}}}])
+        sorter = self.create_patch_sorter(current_config)
+
+        actual_changes = sorter.sort(patch)
+
+        config = current_config
+        for change in actual_changes:
+            config = change.apply(config)
+        self.assertEqual(patch.apply(current_config), config)
 
     def test_patch_sorter__remove_last_bgp_allowed_prefix__removes_field_instead_of_emptying_it(self):
         current_config = {
