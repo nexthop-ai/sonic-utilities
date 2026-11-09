@@ -521,6 +521,39 @@ class TestShowSflow(object):
 
         return
 
+    def test_config_sflow_sample_direction_hw_accelerated(self):
+        db = Db()
+        runner = CliRunner()
+        obj = {'db': db.cfgdb}
+        db.cfgdb.mod_entry('SFLOW', 'global', {'hardware_accelerated': 'enable'})
+
+        # HW mode checks the egress sample mirror capability, not the samplepacket one
+        with mock.patch.object(config, 'is_port_egress_sflow_supported',
+                               mock.MagicMock(side_effect=lambda hw=False: 'false' if hw else 'true')):
+            result = runner.invoke(config.config.commands["sflow"].commands["sample-direction"], ["tx"], obj=obj)
+            print(result.exit_code, result.output)
+            assert result.exit_code != 0
+            assert "not supported" in result.output
+
+            cmd = config.config.commands["sflow"].commands["interface"].commands["sample-direction"]
+            result = runner.invoke(cmd, ["Ethernet0", "both"], obj=obj)
+            print(result.exit_code, result.output)
+            assert result.exit_code != 0
+            assert "not supported" in result.output
+
+        with mock.patch.object(config, 'is_port_egress_sflow_supported',
+                               mock.MagicMock(side_effect=lambda hw=False: 'true' if hw else 'false')):
+            result = runner.invoke(config.config.commands["sflow"].commands["sample-direction"], ["tx"], obj=obj)
+            print(result.exit_code, result.output)
+            assert result.exit_code == 0
+            assert db.cfgdb.get_entry('SFLOW', 'global')['sample_direction'] == 'tx'
+
+            cmd = config.config.commands["sflow"].commands["interface"].commands["sample-direction"]
+            result = runner.invoke(cmd, ["Ethernet0", "both"], obj=obj)
+            print(result.exit_code, result.output)
+            assert result.exit_code == 0
+            assert db.cfgdb.get_entry('SFLOW_SESSION', 'Ethernet0')['sample_direction'] == 'both'
+
     def test_config_all_intf_sample_direction(self):
         db = Db()
         runner = CliRunner()

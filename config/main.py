@@ -3577,6 +3577,85 @@ def add_erspan(session_name, src_ip, dst_ip, dscp, ttl, gre_type, queue,
             except ValueError as e:
                 ctx.fail("Invalid ConfigDB. Error: {}".format(e))
 
+<<<<<<< HEAD
+=======
+
+@mirror_session.group(cls=clicommon.AbbreviationGroup, name='sflow')
+@click.pass_context
+def sflow(ctx):
+    """ SFLOW mirror_session """
+    pass
+
+
+@sflow.command('add')
+@click.argument('session_name', metavar='<session_name>', required=True)
+@click.argument('src_ip', metavar='<src_ip>', callback=validate_ip_address, required=True)
+@click.argument('dst_ip', metavar='<dst_ip>', callback=validate_ip_address, required=True)
+@click.argument('dscp', metavar='<dscp>', type=DSCP_RANGE, required=True)
+@click.argument('ttl', metavar='<ttl>', type=TTL_RANGE, required=True)
+@click.argument('queue', metavar='[queue]', type=QUEUE_RANGE, required=False)
+@click.argument('src_port', metavar='[src_port]', required=False)
+@click.argument('direction', metavar='[direction]', required=False)
+@click.option('--sample_rate', type=int, default=0, callback=validate_sample_rate,
+              help="Sampling rate (1-in-N), 2..4294967295. Required")
+@click.option('--truncate_size', type=int, default=0, callback=validate_truncate_size,
+              help="Truncation size in bytes, 64..9216. 0 disables truncation. "
+                   "The platform may support only some sizes")
+@click.option('--udp_dst_port', type=UDP_PORT_RANGE,
+              help="UDP destination port of the sFlow datagram. Default: 6343")
+def sflow_add(session_name, src_ip, dst_ip, dscp, ttl, queue, src_port, direction,
+              sample_rate, truncate_size, udp_dst_port):
+    """ Add SFLOW mirror session """
+    add_sflow(session_name, src_ip, dst_ip, dscp, ttl, queue, src_port, direction,
+              sample_rate, truncate_size, udp_dst_port)
+
+
+def add_sflow(session_name, src_ip, dst_ip, dscp, ttl, queue,
+              src_port=None, direction=None, sample_rate=0, truncate_size=0,
+              udp_dst_port=None):
+    ctx = click.get_current_context()
+
+    # MirrorOrch refuses an SFLOW session without a source port or a sample rate,
+    # so catch those here rather than leave the session in the error state.
+    if not src_port:
+        ctx.fail("src_port is required for an SFLOW session")
+    if not sample_rate:
+        ctx.fail("--sample_rate is required for an SFLOW session")
+    direction = direction.lower() if direction else "rx"
+    if direction in ['tx', 'both'] and is_port_egress_sflow_supported(hw_accelerated=True) == 'false':
+        ctx.fail("Sample direction {} is not supported on this platform".format(direction))
+
+    session_info = {
+            "type": "SFLOW",
+            "src_ip": src_ip,
+            "dst_ip": dst_ip,
+            "dscp": dscp,
+            "ttl": ttl
+            }
+
+    # When absent, MirrorOrch uses 6343.
+    if udp_dst_port is not None:
+        session_info['udp_dst_port'] = udp_dst_port
+
+    session_info = gather_session_info(session_info, None, queue, src_port, direction,
+                                       sample_rate, truncate_size)
+    raw_src_port = session_info.get('src_port')
+
+    config_db = ValidatedConfigDBConnector(ConfigDBConnector())
+    config_db.connect()
+    if ADHOC_VALIDATION:
+        if validate_mirror_session_config(
+            config_db, session_name, None, raw_src_port, direction, erspan=True
+        ) is False:
+            return
+    session_info['src_port'] = normalize_mirror_src_port(config_db, raw_src_port)
+    try:
+        config_db.set_entry("MIRROR_SESSION", session_name, session_info)
+    except ValueError as e:
+        ctx.fail("Invalid ConfigDB. Error: {}".format(e))
+
+
+>>>>>>> 2521299f (NOS-21742: allow tx and both direction for HW sFlow in the CLI (#1258))
 @mirror_session.group(cls=clicommon.AbbreviationGroup, name='span')
 @click.pass_context
 def span(ctx):
@@ -9743,12 +9822,19 @@ def polling_int(ctx, interval):
     except ValueError as e:
         ctx.fail("Invalid ConfigDB. Error: {}".format(e))
 
-def is_port_egress_sflow_supported():
+
+def is_port_egress_sflow_supported(hw_accelerated=False):
+    # HW sFlow samples egress through a mirror session, not a samplepacket.
+    key = "PORT_EGRESS_SAMPLE_MIRROR_CAPABLE" if hw_accelerated else "PORT_EGRESS_SAMPLE_CAPABLE"
     state_db = SonicV2Connector(use_unix_socket_path=True)
     state_db.connect(state_db.STATE_DB, False)
     entry_name="SWITCH_CAPABILITY|switch"
-    supported = state_db.get(state_db.STATE_DB, entry_name,"PORT_EGRESS_SAMPLE_CAPABLE")
+    supported = state_db.get(state_db.STATE_DB, entry_name, key)
     return supported
+
+
+def is_hw_sflow_enabled(config_db):
+    return config_db.get_entry('SFLOW', 'global').get('hardware_accelerated') == 'enable'
 
 #
 # 'sflow' command ('config sflow sample-direction ...')
@@ -9758,15 +9844,16 @@ def is_port_egress_sflow_supported():
 @click.pass_context
 def global_sample_direction(ctx, direction):
     """Set sampling direction """
+    config_db = ValidatedConfigDBConnector(ctx.obj['db'])
     if ADHOC_VALIDATION:
         if direction:
             if direction not in ['rx', 'tx', 'both']:
                 ctx.fail("Direction {} is invalid".format(direction))
 
-            if ((direction == 'tx' or direction == 'both') and (is_port_egress_sflow_supported() == 'false')):
+            if ((direction == 'tx' or direction == 'both') and
+                    (is_port_egress_sflow_supported(is_hw_sflow_enabled(config_db)) == 'false')):
                 ctx.fail("Sample direction {} is not supported on this platform".format(direction))
 
-    config_db = ValidatedConfigDBConnector(ctx.obj['db'])
     sflow_tbl = config_db.get_table('SFLOW')
 
     if not sflow_tbl:
@@ -9938,7 +10025,8 @@ def interface_sample_direction(ctx, ifname, direction):
             if direction not in ['rx', 'tx', 'both']:
                 ctx.fail("Direction {} is invalid".format(direction))
 
-            if (direction == 'tx' or direction == 'both') and (is_port_egress_sflow_supported() == 'false'):
+            if ((direction == 'tx' or direction == 'both') and
+                    (is_port_egress_sflow_supported(is_hw_sflow_enabled(config_db)) == 'false')):
                 ctx.fail("Sample direction {} is not supported on this platform".format(direction))
 
     sess_dict = config_db.get_table('SFLOW_SESSION')
