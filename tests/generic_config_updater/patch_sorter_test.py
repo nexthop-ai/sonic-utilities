@@ -1227,6 +1227,128 @@ class TestCreateOnlyMoveValidator(unittest.TestCase):
 
         self.assertEqual(expected, actual)
 
+<<<<<<< HEAD
+=======
+    def verify_q3d_diff(self, current_config, target_config, current_config_tokens=None,
+                        target_config_tokens=None, expected=True):
+        with mock.patch.object(ps.CreateOnlyFilter, "_get_asic", return_value="q3d"):
+            self.validator = ps.CreateOnlyMoveValidator(PathAddressing(ConfigWrapper()))
+        self.verify_diff(current_config, target_config, current_config_tokens, target_config_tokens, expected)
+
+    def test_validate__scheduler_in_place_field_replaced__success(self):
+        current_config = {"SCHEDULER": {"scheduler.0": {"type": "DWRR", "weight": "14"}}}
+        target_config = {"SCHEDULER": {"scheduler.0": {"type": "DWRR", "weight": "13"}}}
+        self.verify_q3d_diff(current_config,
+                             target_config,
+                             ["SCHEDULER", "scheduler.0", "weight"],
+                             ["SCHEDULER", "scheduler.0", "weight"])
+
+    def test_validate__scheduler_in_place_field_replaced_on_unlisted_asic__failure(self):
+        current_config = {"SCHEDULER": {"scheduler.0": {"type": "DWRR", "weight": "14"}}}
+        target_config = {"SCHEDULER": {"scheduler.0": {"type": "DWRR", "weight": "13"}}}
+        self.verify_diff(current_config,
+                         target_config,
+                         ["SCHEDULER", "scheduler.0", "weight"],
+                         ["SCHEDULER", "scheduler.0", "weight"],
+                         False)
+
+    def test_validate__scheduler_in_place_field_added_to_existing_scheduler__success(self):
+        current_config = {"SCHEDULER": {"scheduler.0": {"type": "DWRR", "weight": "14"}}}
+        target_config = {"SCHEDULER": {"scheduler.0": {"type": "DWRR", "weight": "14",
+                                                       "meter_type": "bytes", "cir": "1000", "pir": "2000"}}}
+        self.verify_q3d_diff(current_config,
+                             target_config,
+                             ["SCHEDULER", "scheduler.0"],
+                             ["SCHEDULER", "scheduler.0"])
+
+    def test_validate__scheduler_in_place_field_removed_from_kept_scheduler__failure(self):
+        # orchagent cannot clear a removed scheduler field, so it must not be removed in place
+        current_config = {"SCHEDULER": {"scheduler.0": {"type": "STRICT", "meter_type": "bytes",
+                                                        "cir": "1000", "pir": "2000"}}}
+        target_config = {"SCHEDULER": {"scheduler.0": {"type": "DWRR", "weight": "40"}}}
+        self.verify_q3d_diff(current_config,
+                             target_config,
+                             ["SCHEDULER", "scheduler.0"],
+                             ["SCHEDULER", "scheduler.0"],
+                             False)
+
+    def test_validate__scheduler_in_place_change_left_partial__failure(self):
+        # A move that changes the scheduler must bring the whole entry to its target: here it
+        # sets the new type but leaves the weight to a later change.
+        current_config = {"SCHEDULER": {"scheduler.0": {"type": "STRICT"}}}
+        target_config = {"SCHEDULER": {"scheduler.0": {"type": "DWRR", "weight": "40"}}}
+        self.verify_q3d_diff(current_config,
+                             target_config,
+                             ["SCHEDULER", "scheduler.0", "type"],
+                             ["SCHEDULER", "scheduler.0", "type"],
+                             False)
+
+    def test_validate__scheduler_burst_field_replaced__failure(self):
+        current_config = {"SCHEDULER": {"scheduler.0": {"type": "DWRR", "pir": "2000", "pbs": "8192"}}}
+        target_config = {"SCHEDULER": {"scheduler.0": {"type": "DWRR", "pir": "2000", "pbs": "16384"}}}
+        self.verify_q3d_diff(current_config,
+                             target_config,
+                             ["SCHEDULER", "scheduler.0", "pbs"],
+                             ["SCHEDULER", "scheduler.0", "pbs"],
+                             False)
+
+    def test_validate__scheduler_carrying_burst_field_in_place_field_replaced__failure(self):
+        # orchagent re-sets every field on an update, so a weight change on a scheduler that
+        # carries pbs would also re-set pbs in place
+        current_config = {"SCHEDULER": {"scheduler.0": {"type": "DWRR", "weight": "5", "pir": "2000", "pbs": "8192"}}}
+        target_config = {"SCHEDULER": {"scheduler.0": {"type": "DWRR", "weight": "7", "pir": "2000", "pbs": "8192"}}}
+        self.verify_q3d_diff(current_config,
+                             target_config,
+                             ["SCHEDULER", "scheduler.0", "weight"],
+                             ["SCHEDULER", "scheduler.0", "weight"],
+                             False)
+
+    def test_validate__move_touches_no_create_only_table__nothing_scanned(self):
+        # Ethernet0's lanes differ from the target, but the move only adds an ACL table, so no
+        # create-only field changes and none needs checking.
+        current_config = {"PORT": {"Ethernet0": {"lanes": "65"}}}
+        target_config = {"PORT": {"Ethernet0": {"lanes": "66"}}, "ACL_TABLE": {"t": {"type": "L3"}}}
+        diff = ps.Diff(current_config, target_config)
+        move = ps.JsonMove(diff, OperationType.ADD, ["ACL_TABLE"], ["ACL_TABLE"])
+
+        with mock.patch.object(self.validator, "_get_create_only_paths",
+                               wraps=self.validator._get_create_only_paths) as scan:
+            actual, _ = self.validator.validate(move, diff, move.apply(diff.current_config))
+
+        self.assertTrue(actual)
+        scan.assert_not_called()
+
+    def test_validate__only_changed_row_scanned(self):
+        current_config = {"PORT": {"Ethernet0": {"lanes": "65"}, "Ethernet4": {"lanes": "70", "speed": "100000"}}}
+        target_config = {"PORT": {"Ethernet0": {"lanes": "66"}, "Ethernet4": {"lanes": "70", "speed": "400000"}}}
+        diff = ps.Diff(current_config, target_config)
+        move = ps.JsonMove(diff, OperationType.REPLACE, ["PORT", "Ethernet4", "speed"],
+                           ["PORT", "Ethernet4", "speed"])
+
+        with mock.patch.object(self.validator, "_get_create_only_paths",
+                               wraps=self.validator._get_create_only_paths) as scan:
+            actual, _ = self.validator.validate(move, diff, move.apply(diff.current_config))
+
+        self.assertTrue(actual)
+        for call in scan.call_args_list:
+            self.assertEqual({"PORT": ["Ethernet4"]}, {t: list(rows) for t, rows in call.args[0].items()})
+
+    def test_validate__changed_row_with_create_only_change__failure(self):
+        current_config = {"PORT": {"Ethernet0": {"lanes": "65"}, "Ethernet4": {"lanes": "70"}}}
+        target_config = {"PORT": {"Ethernet0": {"lanes": "65"}, "Ethernet4": {"lanes": "71"}}}
+        self.verify_diff(current_config, target_config,
+                         ["PORT", "Ethernet4", "lanes"], ["PORT", "Ethernet4", "lanes"], False)
+
+    def test_validate__table_not_named_literally__whole_config_checked(self):
+        self.validator.create_only.patterns = [["*", "*", "lanes"]]
+        current_config = {"PORT": {"Ethernet0": {"lanes": "65"}}}
+        target_config = {"PORT": {"Ethernet0": {"lanes": "66"}}}
+
+        self.assertIsNone(self.validator._changed_rows(current_config, target_config))
+        self.verify_diff(current_config, target_config,
+                         ["PORT", "Ethernet0", "lanes"], ["PORT", "Ethernet0", "lanes"], False)
+
+>>>>>>> 22e97f8d (NOS-15510: [gcu] take ports admin down in one step and create a new table in one step (#1365))
     def verify_diff(self, current_config, target_config, current_config_tokens=None, target_config_tokens=None, expected=True):
         # Arrange
         current_config_tokens = current_config_tokens if current_config_tokens else []
@@ -2521,6 +2643,357 @@ class TestBulkLeafListMoveGenerator(unittest.TestCase):
         self.assertCountEqual(ex_ops, moves_ops)
 
 
+<<<<<<< HEAD
+=======
+class TestBulkLowLevelMoveGenerator(unittest.TestCase):
+    """Bulk low-level moves for entries that contain a leaf-list.
+
+    A leaf-list is replaced as a whole value, exactly like a scalar leaf, so its
+    presence must not disqualify the entry from bulk grouping. Before this was
+    handled, a single leaf-list anywhere in an entry silenced this generator for
+    that entry entirely and every field change fell back to one move each.
+    """
+    def setUp(self):
+        path_addressing = PathAddressing()
+        self.generator = ps.BulkLowLevelMoveGenerator(path_addressing)
+
+    def test_generate_replace__entry_has_leaf_list__scalars_still_grouped(self):
+        """Two scalars differ in an entry that also carries an (unchanged) leaf-list."""
+        self.verify_replace(
+            current={"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_A",
+                                             "route_operation": "permit",
+                                             "set_ext_community_inline": ["color:00:401"]}}},
+            target={"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_B",
+                                            "route_operation": "deny",
+                                            "set_ext_community_inline": ["color:00:401"]}}},
+            ex_ops=[{"op": "replace", "path": "/ROUTE_MAP/RM|10/match_prefix_set", "value": "SET_B"},
+                    {"op": "replace", "path": "/ROUTE_MAP/RM|10/route_operation", "value": "deny"}])
+
+    def test_generate_replace__leaf_list_itself_differs__included_in_group(self):
+        """A differing leaf-list is replaced as a whole value alongside scalar changes."""
+        self.verify_replace(
+            current={"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_A",
+                                             "set_ext_community_inline": ["color:00:401"]}}},
+            target={"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_B",
+                                            "set_ext_community_inline": ["color:00:402"]}}},
+            ex_ops=[{"op": "replace", "path": "/ROUTE_MAP/RM|10/match_prefix_set", "value": "SET_B"},
+                    {"op": "replace", "path": "/ROUTE_MAP/RM|10/set_ext_community_inline",
+                     "value": ["color:00:402"]}])
+
+    def test_generate_replace__entry_has_list_of_dicts__no_moves(self):
+        """Lists of non-scalars are still out of scope, so the entry is skipped."""
+        self.verify_replace(
+            current={"TABLE": {"KEY": {"field": "a", "items": [{"x": 1}]}}},
+            target={"TABLE": {"KEY": {"field": "b", "items": [{"x": 1}]}}},
+            ex_ops=[])
+
+    def test_generate_replace__single_change_below_min_moves__no_moves(self):
+        """min_moves defaults to 2, so one differing field alone is not a bulk move."""
+        self.verify_replace(
+            current={"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_A",
+                                             "set_ext_community_inline": ["color:00:401"]}}},
+            target={"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_B",
+                                            "set_ext_community_inline": ["color:00:401"]}}},
+            ex_ops=[])
+
+    def test_generate_remove__entry_has_leaf_list__scalars_still_grouped(self):
+        """The predicate gates removals too, not only replacements."""
+        self.verify(
+            self.generator.generate_remove,
+            current={"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_A",
+                                             "route_operation": "permit",
+                                             "set_ext_community_inline": ["color:00:401"]}}},
+            target={"ROUTE_MAP": {"RM|10": {"set_ext_community_inline": ["color:00:401"]}}},
+            ex_ops=[{"op": "remove", "path": "/ROUTE_MAP/RM|10/match_prefix_set"},
+                    {"op": "remove", "path": "/ROUTE_MAP/RM|10/route_operation"}])
+
+    def test_generate_add__entry_has_leaf_list__scalars_still_grouped(self):
+        """And additions."""
+        self.verify(
+            self.generator.generate_add,
+            current={"ROUTE_MAP": {"RM|10": {"set_ext_community_inline": ["color:00:401"]}}},
+            target={"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_A",
+                                            "route_operation": "permit",
+                                            "set_ext_community_inline": ["color:00:401"]}}},
+            ex_ops=[{"op": "add", "path": "/ROUTE_MAP/RM|10/match_prefix_set", "value": "SET_A"},
+                    {"op": "add", "path": "/ROUTE_MAP/RM|10/route_operation", "value": "permit"}])
+
+    def test_generate_add__suspended_while_another_generate_runs__moves_built_against_own_diff(self):
+        """The DFS sorter resumes a suspended generate() after running generate() on deeper states.
+
+        Each move must be built against the diff its own generate() call received, or a
+        resumed generator addresses a config its moves are then validated against and
+        jsonpatch fails with 'member ... not found'.
+        """
+        current = {"T": {"R1": {"a": "1"}, "R2": {"a": "1"}}}
+        target = {"T": {"R1": {"a": "1", "b": "2"}, "R2": {"a": "1", "b": "2"}}}
+        suspended = self.generator.generate_add(ps.Diff(current, target), min_moves=1)
+        first = next(suspended).get_jsonpatch()
+
+        # A second generate_add() on the same instance, for a state where R2 does not exist
+        # yet. A move for R2 built against that state is lifted to the row level.
+        deeper = ps.Diff({"T": {"R1": {"a": "1"}}}, target)
+        deeper_moves = [list(m.get_jsonpatch()) for m in self.generator.generate_add(deeper, min_moves=1)]
+
+        second = next(suspended).get_jsonpatch()
+        self.assertEqual([[{"op": "add", "path": "/T/R1/b", "value": "2"}]], deeper_moves)
+        self.assertEqual([{"op": "add", "path": "/T/R1/b", "value": "2"}], list(first))
+        self.assertEqual([{"op": "add", "path": "/T/R2/b", "value": "2"}], list(second))
+
+    def verify(self, generate, current, target, ex_ops):
+        diff = ps.Diff(current, target)
+        moves_ops = []
+        for move in generate(diff):
+            moves_ops.extend(move.get_jsonpatch())
+        self.assertCountEqual(ex_ops, moves_ops)
+
+    def verify_replace(self, current, target, ex_ops):
+        diff = ps.Diff(current, target)
+        moves_ops = []
+        for move in self.generator.generate_replace(diff):
+            moves_ops.extend(move.get_jsonpatch())
+        self.assertCountEqual(ex_ops, moves_ops)
+
+
+class TestBulkKeyLevelMoveGenerator(unittest.TestCase):
+    def setUp(self):
+        self.generator = ps.BulkKeyLevelMoveGenerator(PathAddressing())
+
+    @staticmethod
+    def port(lanes, admin_status=None):
+        return dict({"lanes": lanes}, **({"admin_status": admin_status} if admin_status else {}))
+
+    def test_generate__ports_created_admin_up_with_bindings__added_admin_down_in_one_group(self):
+        current = {"PORT": {"Ethernet0": self.port("0", "up")}}
+        target = {"PORT": {"Ethernet0": self.port("0", "up"),
+                           "Ethernet4": self.port("4", "up"), "Ethernet8": self.port("8", "up")},
+                  "BUFFER_PG": {"Ethernet4|3": {"profile": "p"}, "Ethernet8|3": {"profile": "p"}}}
+
+        groups = list(self.generator.generate(ps.Diff(current, target)))
+
+        self.assertIn([{"op": "add", "path": "/PORT/Ethernet4", "value": self.port("4", "down")},
+                       {"op": "add", "path": "/PORT/Ethernet8", "value": self.port("8", "down")}],
+                      [sorted(group.get_jsonpatch(), key=lambda op: op["path"]) for group in groups])
+        self.assertEqual("up", target["PORT"]["Ethernet4"]["admin_status"])
+
+    def test_generate__port_table_created_admin_up_with_bindings__table_added_with_ports_admin_down(self):
+        target = {"PORT": {"Ethernet0": self.port("0", "up"), "Ethernet4": self.port("4", "up")},
+                  "BUFFER_PG": {"Ethernet0|3": {"profile": "p"}, "Ethernet4|3": {"profile": "p"}}}
+
+        groups = list(self.generator.generate(ps.Diff({}, target)))
+
+        self.assertIn([{"op": "add", "path": "/PORT",
+                        "value": {"Ethernet0": self.port("0", "down"), "Ethernet4": self.port("4", "down")}}],
+                      [list(group.get_jsonpatch()) for group in groups])
+
+    def test_generate__only_ports_with_a_pending_binding_are_added_admin_down(self):
+        # Ethernet4 gets a binding; Ethernet8 gets none; Ethernet12 is created admin down anyway;
+        # Ethernet16 has no admin_status, which defaults to down.
+        current = {"PORT": {"Ethernet0": self.port("0", "up")}}
+        target = {"PORT": {"Ethernet0": self.port("0", "up"), "Ethernet4": self.port("4", "up"),
+                           "Ethernet8": self.port("8", "up"), "Ethernet12": self.port("12", "down"),
+                           "Ethernet16": self.port("16")},
+                  "BUFFER_PG": {"Ethernet4|3": {"profile": "p"}, "Ethernet12|3": {"profile": "p"},
+                                "Ethernet16|3": {"profile": "p"}}}
+
+        groups = list(self.generator.generate(ps.Diff(current, target)))
+
+        added = {op["path"]: op["value"] for group in groups for op in group.get_jsonpatch()
+                 if op["path"].startswith("/PORT/")}
+        self.assertEqual({"/PORT/Ethernet4": self.port("4", "down"), "/PORT/Ethernet8": self.port("8", "up"),
+                          "/PORT/Ethernet12": self.port("12", "down"), "/PORT/Ethernet16": self.port("16")},
+                         added)
+
+    def test_generate__binding_of_new_port_already_in_place__port_added_as_in_target(self):
+        # Nothing that needs the port down is left to change, so it is created as the target has it.
+        current = {"PORT": {"Ethernet0": self.port("0", "up")},
+                   "BUFFER_PG": {"Ethernet0|3": {"profile": "p"}}}
+        target = {"PORT": {"Ethernet0": self.port("0", "up"), "Ethernet4": self.port("4", "up")},
+                  "BUFFER_PG": {"Ethernet0|3": {"profile": "p"}}}
+
+        groups = list(self.generator.generate(ps.Diff(current, target)))
+
+        self.assertEqual([[{"op": "add", "path": "/PORT/Ethernet4", "value": self.port("4", "up")}]],
+                         [list(group.get_jsonpatch()) for group in groups])
+
+    def test_generate__no_key_added_to_a_required_table__required_values_not_looked_up(self):
+        current = {"PORT": {"Ethernet0": self.port("0", "up")}}
+        target = {"PORT": {"Ethernet0": self.port("0", "up")},
+                  "BUFFER_PG": {"Ethernet0|3": {"profile": "p"}}}
+        self.generator.identifier = Mock()
+
+        list(self.generator.generate(ps.Diff(current, target)))
+
+        self.generator.identifier.get_required_values_of_added_parents.assert_not_called()
+
+    def test_generate__keys_in_new_table__one_add_of_the_table_with_all_keys(self):
+        current = {"ExistingTable": {"Key1": {"f": "1"}}}
+        target = {"ExistingTable": {"Key1": {"f": "1"}},
+                  "NewTable": {"KeyA": {"f": "a"}, "KeyB": {"f": "b"}, "KeyC": {"f": "c"}}}
+
+        groups = list(self.generator.generate(ps.Diff(current, target)))
+
+        self.assertEqual(1, len(groups))
+        self.assertEqual([{"op": "add", "path": "/NewTable", "value": target["NewTable"]}],
+                         list(groups[0].get_jsonpatch()))
+        self.assertEqual(target, groups[0].apply(current))
+
+    def test_generate__new_table_keys_with_different_separators__each_group_creates_the_table(self):
+        current = {"ExistingTable": {"Key1": {"f": "1"}}}
+        target = {"ExistingTable": {"Key1": {"f": "1"}},
+                  "NewTable": {"KeyA": {}, "KeyB": {}, "KeyA|10.0.0.1/31": {}, "KeyB|10.0.0.3/31": {}}}
+
+        groups = list(self.generator.generate(ps.Diff(current, target)))
+
+        self.assertEqual(2, len(groups))
+        values = []
+        for group in groups:
+            ops = list(group.get_jsonpatch())
+            self.assertEqual(1, len(ops))
+            self.assertEqual("/NewTable", ops[0]["path"])
+            values.append(set(ops[0]["value"]))
+        self.assertCountEqual([{"KeyA", "KeyB"}, {"KeyA|10.0.0.1/31", "KeyB|10.0.0.3/31"}], values)
+
+    def test_generate__new_table__move_value_is_not_the_target_config(self):
+        target = {"NewTable": {"KeyA": {"f": "a"}, "KeyB": {"f": "b"}}}
+
+        group = list(self.generator.generate(ps.Diff({}, target)))[0]
+        group.apply({})["NewTable"]["KeyA"]["f"] = "changed"
+
+        self.assertEqual("a", target["NewTable"]["KeyA"]["f"])
+
+    def test_generate__keys_in_existing_table__added_by_path(self):
+        current = {"ExistingTable": {"Key1": {"f": "1"}}}
+        target = {"ExistingTable": {"Key1": {"f": "1"}, "Key2": {"f": "2"}, "Key3": {"f": "3"}}}
+
+        groups = list(self.generator.generate(ps.Diff(current, target)))
+
+        self.assertEqual(1, len(groups))
+        self.assertCountEqual([{"op": "add", "path": "/ExistingTable/Key2", "value": {"f": "2"}},
+                               {"op": "add", "path": "/ExistingTable/Key3", "value": {"f": "3"}}],
+                              list(groups[0].get_jsonpatch()))
+
+
+class TestBulkRequiredValueMoveGenerator(unittest.TestCase):
+    def setUp(self):
+        path_addressing = PathAddressing()
+        self.generator = ps.BulkRequiredValueMoveGenerator(path_addressing)
+        self.generator.identifier.settings[0]["requiring_filter"] = ps.JsonPointerFilter([
+                ["BUFFER_PG", "@|*"],
+                ["QUEUE", "@|*", "scheduler"],
+            ],
+            path_addressing)
+
+    @staticmethod
+    def ports(admin_status):
+        return {port: dict({"lanes": lanes}, **({"admin_status": admin_status[port]} if port in admin_status else {}))
+                for port, lanes in (("Ethernet0", "0"), ("Ethernet4", "4"), ("Ethernet8", "8"))}
+
+    def generate(self, current, target):
+        return [list(group.get_jsonpatch()) for group in self.generator.generate(ps.Diff(current, target))]
+
+    def test_generate__bindings_added_on_admin_up_ports__one_group_takes_them_all_down(self):
+        current = {"PORT": self.ports({"Ethernet0": "up", "Ethernet4": "up", "Ethernet8": "up"})}
+        target = copy.deepcopy(current)
+        target["BUFFER_PG"] = {"Ethernet0|3": {"profile": "p"}, "Ethernet4|3": {"profile": "p"}}
+
+        self.assertEqual([[{"op": "replace", "path": "/PORT/Ethernet0/admin_status", "value": "down"},
+                           {"op": "replace", "path": "/PORT/Ethernet4/admin_status", "value": "down"}]],
+                         self.generate(current, target))
+
+    def test_generate__field_added_to_existing_rows__ports_go_down(self):
+        current = {"PORT": self.ports({"Ethernet0": "up", "Ethernet4": "up"}),
+                   "QUEUE": {"Ethernet0|0": {}, "Ethernet4|0": {}}}
+        target = copy.deepcopy(current)
+        for key in target["QUEUE"]:
+            target["QUEUE"][key]["scheduler"] = "s"
+
+        self.assertEqual([[{"op": "replace", "path": "/PORT/Ethernet0/admin_status", "value": "down"},
+                           {"op": "replace", "path": "/PORT/Ethernet4/admin_status", "value": "down"}]],
+                         self.generate(current, target))
+
+    def test_generate__ports_down_or_without_admin_status__nothing_generated(self):
+        current = {"PORT": self.ports({"Ethernet0": "down"})}
+        target = copy.deepcopy(current)
+        target["BUFFER_PG"] = {"Ethernet0|3": {"profile": "p"}, "Ethernet4|3": {"profile": "p"}}
+
+        self.assertEqual([], self.generate(current, target))
+
+    def test_generate__bindings_replaced_or_removed__left_to_the_extender(self):
+        current = {"PORT": self.ports({"Ethernet0": "up", "Ethernet4": "up"}),
+                   "QUEUE": {"Ethernet0|0": {"scheduler": "s0"}, "Ethernet4|0": {"scheduler": "s0"}}}
+        target = copy.deepcopy(current)
+        target["QUEUE"]["Ethernet0|0"]["scheduler"] = "s1"
+        del target["QUEUE"]["Ethernet4|0"]
+
+        self.assertEqual([], self.generate(current, target))
+
+    def test_generate__port_created_by_the_patch__nothing_generated(self):
+        current = {}
+        target = {"PORT": self.ports({"Ethernet0": "up"}), "BUFFER_PG": {"Ethernet0|3": {"profile": "p"}}}
+
+        self.assertEqual([], self.generate(current, target))
+
+    def test_generate__no_binding_change__nothing_generated(self):
+        current = {"PORT": self.ports({"Ethernet0": "up"}), "BUFFER_PG": {"Ethernet0|3": {"profile": "p"}}}
+        target = copy.deepcopy(current)
+        target["PORT"]["Ethernet0"]["mtu"] = "9100"
+
+        self.assertEqual([], self.generate(current, target))
+
+
+class TestBulkKeyGroupLowLevelMoveGenerator(unittest.TestCase):
+    """Grouping the same field change across many keys of one table."""
+    def setUp(self):
+        path_addressing = PathAddressing()
+        self.generator = ps.BulkKeyGroupLowLevelMoveGenerator(path_addressing)
+
+    def test_generate__same_field_across_keys_with_leaf_lists__single_group(self):
+        """One field changed in each of three keys that also carry leaf-lists.
+
+        This is the shape of a route-map retargeting: N sequences, each keeping its
+        leaf-list and changing one scalar. All of it belongs in one group.
+        """
+        current = {"ROUTE_MAP": {
+            "RM|10": {"match_prefix_set": "SET_A1", "set_ext_community_inline": ["color:00:401"]},
+            "RM|20": {"match_prefix_set": "SET_A2", "set_ext_community_inline": ["color:00:402"]},
+            "RM|30": {"match_prefix_set": "SET_A3", "set_ext_community_inline": ["color:00:403"]}}}
+        target = copy.deepcopy(current)
+        for index, key in enumerate(("RM|10", "RM|20", "RM|30"), start=1):
+            target["ROUTE_MAP"][key]["match_prefix_set"] = "SET_B{}".format(index)
+
+        diff = ps.Diff(current, target)
+        groups = [group for group in self.generator.generate(diff) if list(group.get_jsonpatch())]
+
+        self.assertEqual(1, len(groups), "the three key changes belong in a single group")
+        self.assertCountEqual(
+            [{"op": "replace", "path": "/ROUTE_MAP/RM|10/match_prefix_set", "value": "SET_B1"},
+             {"op": "replace", "path": "/ROUTE_MAP/RM|20/match_prefix_set", "value": "SET_B2"},
+             {"op": "replace", "path": "/ROUTE_MAP/RM|30/match_prefix_set", "value": "SET_B3"}],
+            list(groups[0].get_jsonpatch()))
+
+    def test_generate__keys_from_different_tables__separate_groups(self):
+        """Merging is per parent table: a different parentTableName() ends the group."""
+        current = {"ROUTE_MAP": {"RM|10": {"match_prefix_set": "SET_A1", "route_operation": "permit"},
+                                 "RM|20": {"match_prefix_set": "SET_A2", "route_operation": "permit"}},
+                   "ACL_RULE": {"T|R1": {"PRIORITY": "10", "PACKET_ACTION": "FORWARD"}}}
+        target = copy.deepcopy(current)
+        target["ROUTE_MAP"]["RM|10"]["match_prefix_set"] = "SET_B1"
+        target["ROUTE_MAP"]["RM|20"]["match_prefix_set"] = "SET_B2"
+        target["ACL_RULE"]["T|R1"]["PRIORITY"] = "20"
+
+        diff = ps.Diff(current, target)
+        groups = [group for group in self.generator.generate(diff) if list(group.get_jsonpatch())]
+        tables = [group.parentTableName() for group in groups]
+
+        self.assertNotIn("/ACL_RULE/T", [t for t in tables if t == "/ROUTE_MAP/RM"],
+                         "the two tables must not share a group")
+        for group in groups:
+            paths = {op["path"].split("/")[1] for op in group.get_jsonpatch()}
+            self.assertEqual(1, len(paths), f"group spans more than one table: {paths}")
+
+
+>>>>>>> 22e97f8d (NOS-15510: [gcu] take ports admin down in one step and create a new table in one step (#1365))
 class TestLowLevelMoveGenerator(unittest.TestCase):
     def setUp(self):
         path_addressing = PathAddressing()
@@ -3617,12 +4090,15 @@ class TestSortAlgorithmFactory(unittest.TestCase):
         config_wrapper = ConfigWrapper()
         factory = ps.SortAlgorithmFactory(OperationWrapper(), config_wrapper, PathAddressing(config_wrapper))
         expected_generators = [ps.LowLevelMoveGenerator]
+        # In order: the DFS tries generators first to last, and BulkRequiredValueMoveGenerator must run
+        # before the generators that add the port bindings it takes the ports down for.
         expected_non_extendable_generators = [ps.RemoveCreateOnlyDependencyMoveGenerator,
+                                              ps.BulkRequiredValueMoveGenerator,
+                                              ps.BulkLeafListMoveGenerator,
                                               ps.BulkKeyLevelMoveGenerator,
                                               ps.KeyLevelMoveGenerator,
                                               ps.BulkKeyGroupLowLevelMoveGenerator,
-                                              ps.BulkLowLevelMoveGenerator,
-                                              ps.BulkLeafListMoveGenerator]
+                                              ps.BulkLowLevelMoveGenerator]
         expected_extenders = [ps.RequiredValueMoveExtender,
                               ps.UpperLevelMoveExtender,
                               ps.DeleteInsteadOfReplaceMoveExtender,
@@ -3645,7 +4121,7 @@ class TestSortAlgorithmFactory(unittest.TestCase):
         # Assert
         self.assertIsInstance(sorter, algo_class)
         self.assertCountEqual(expected_generators, actual_generators)
-        self.assertCountEqual(expected_non_extendable_generators, actual_non_extendable_generators)
+        self.assertEqual(expected_non_extendable_generators, actual_non_extendable_generators)
         self.assertCountEqual(expected_extenders, actual_extenders)
         self.assertCountEqual(expected_validator, actual_validators)
 
@@ -3781,6 +4257,133 @@ class TestPatchSorter(unittest.TestCase):
 
         # Assert
         self.assertEqual(expected, actual)
+
+    def test_sort__new_port_binding_table_on_admin_up_ports__ports_go_down_in_one_step(self):
+        # A table that binds to ports is added for several admin-up ports: all of them go admin down in a
+        # single change, the table is created with all its keys in the next one, and they come back up.
+        ports = [f"Ethernet{i}" for i in range(0, 16, 4)]
+        current_config = {
+            "PORT": {port: {"lanes": f"{i},{i+1},{i+2},{i+3}", "alias": f"etp{i}", "speed": "100000",
+                            "admin_status": "up"} for i, port in zip(range(0, 16, 4), ports)},
+            "SCHEDULER": {"scheduler.0": {"type": "DWRR", "weight": "14"}},
+        }
+        queues = {f"{port}|{q}": {"scheduler": "scheduler.0"} for port in ports for q in (0, 1)}
+        patch = jsonpatch.JsonPatch([{"op": "add", "path": "/QUEUE", "value": queues}])
+
+        with mock.patch.object(ps.RequiredValueIdentifier, "_get_asic", return_value="unknown"):
+            actual = self.create_patch_sorter(current_config).sort(patch)
+
+        changes = [list(change.patch) for change in actual]
+        downs = [{"op": "replace", "path": f"/PORT/{port}/admin_status", "value": "down"} for port in ports]
+        ups = [{"op": "replace", "path": f"/PORT/{port}/admin_status", "value": "up"} for port in ports]
+        self.assertEqual(3, len(changes), changes)
+        self.assertCountEqual(downs, changes[0])
+        self.assertEqual([{"op": "add", "path": "/QUEUE", "value": queues}], changes[1])
+        self.assertCountEqual(ups, changes[2])
+        config = current_config
+        for change in actual:
+            config = change.apply(config)
+        self.assertEqual(patch.apply(current_config), config)
+
+    def test_sort__ports_created_admin_up_with_bindings__added_down_in_one_step_and_brought_up_together(self):
+        # A patch creates admin-up ports together with their bindings, as a breakout change does. The ports
+        # are added admin down in one change, the bindings in the next, and the ports come up together.
+        new_ports = [f"Ethernet{i}" for i in range(4, 20, 4)]
+
+        def port(i, admin_status):
+            return {"lanes": f"{i},{i+1},{i+2},{i+3}", "alias": f"etp{i}", "speed": "100000",
+                    "admin_status": admin_status}
+        scheduler = {"SCHEDULER": {"scheduler.0": {"type": "DWRR", "weight": "14"}}}
+        queues = {f"{name}|0": {"scheduler": "scheduler.0"} for name in new_ports}
+        ups = [{"op": "replace", "path": f"/PORT/{name}/admin_status", "value": "up"} for name in new_ports]
+        cases = {
+            "port and queue tables exist": (
+                dict(scheduler, PORT={"Ethernet0": port(0, "up")},
+                     QUEUE={"Ethernet0|0": {"scheduler": "scheduler.0"}}),
+                [{"op": "add", "path": f"/PORT/{name}", "value": port(int(name[8:]), "up")} for name in new_ports] +
+                [{"op": "add", "path": f"/QUEUE/{key}", "value": value} for key, value in queues.items()],
+                [{"op": "add", "path": f"/PORT/{name}", "value": port(int(name[8:]), "down")}
+                 for name in new_ports],
+                [{"op": "add", "path": f"/QUEUE/{key}", "value": value} for key, value in queues.items()]),
+            "port and queue tables are created": (
+                dict(scheduler),
+                [{"op": "add", "path": "/PORT", "value": {name: port(int(name[8:]), "up") for name in new_ports}},
+                 {"op": "add", "path": "/QUEUE", "value": queues}],
+                [{"op": "add", "path": "/PORT",
+                  "value": {name: port(int(name[8:]), "down") for name in new_ports}}],
+                [{"op": "add", "path": "/QUEUE", "value": queues}]),
+        }
+        for name, (current_config, operations, expected_ports, expected_queues) in cases.items():
+            with self.subTest(name=name):
+                patch = jsonpatch.JsonPatch(operations)
+
+                with mock.patch.object(ps.RequiredValueIdentifier, "_get_asic", return_value="unknown"):
+                    actual = self.create_patch_sorter(current_config).sort(patch)
+
+                changes = [list(change.patch) for change in actual]
+                self.assertEqual(3, len(changes), changes)
+                self.assertCountEqual(expected_ports, changes[0])
+                self.assertCountEqual(expected_queues, changes[1])
+                self.assertCountEqual(ups, changes[2])
+                config = current_config
+                for change in actual:
+                    config = change.apply(config)
+                self.assertEqual(patch.apply(current_config), config)
+
+    def test_sort__live_patch_adding_bindings_and_other_changes__ports_down_first_up_after_bindings(self):
+        # A live apply-patch that adds port bindings next to unrelated changes: the ports go down together
+        # in the first change, and come back up together once the bindings are in.
+        ports = ["Ethernet0", "Ethernet4"]
+        current_config = {
+            "PORT": {port: {"lanes": f"{i},{i+1},{i+2},{i+3}", "alias": f"etp{i}", "speed": "100000",
+                            "admin_status": "up"} for i, port in zip((0, 4), ports)},
+            "SCHEDULER": {"scheduler.0": {"type": "DWRR", "weight": "14"}},
+        }
+        queues = {f"{port}|0": {"scheduler": "scheduler.1"} for port in ports}
+        patch = jsonpatch.JsonPatch(
+            [{"op": "add", "path": "/SCHEDULER/scheduler.1", "value": {"type": "DWRR", "weight": "15"}},
+             {"op": "add", "path": "/QUEUE", "value": queues}] +
+            [{"op": "add", "path": f"/PORT/{port}/description", "value": f"to-{port}"} for port in ports])
+
+        with mock.patch.object(ps.RequiredValueIdentifier, "_get_asic", return_value="unknown"):
+            actual = self.create_patch_sorter(current_config).sort(patch)
+
+        changes = [list(change.patch) for change in actual]
+        downs = [{"op": "replace", "path": f"/PORT/{port}/admin_status", "value": "down"} for port in ports]
+        ups = [{"op": "replace", "path": f"/PORT/{port}/admin_status", "value": "up"} for port in ports]
+        admin = [i for i, change in enumerate(changes) if any(op["path"].endswith("/admin_status") for op in change)]
+        bindings = changes.index([{"op": "add", "path": "/QUEUE", "value": queues}])
+        self.assertEqual([0, admin[-1]], admin, changes)
+        self.assertCountEqual(downs, changes[0], changes)
+        self.assertCountEqual(ups, changes[admin[-1]], changes)
+        self.assertLess(bindings, admin[-1], changes)
+        config = current_config
+        for change in actual:
+            config = change.apply(config)
+        self.assertEqual(patch.apply(current_config), config)
+
+    def test_sort__port_bindings_replaced_on_admin_up_ports__each_port_down_in_its_own_step(self):
+        # Replacing bindings that exist is left to the extender: a live box takes the ports down one at a time.
+        ports = ["Ethernet0", "Ethernet4"]
+        current_config = {
+            "PORT": {port: {"lanes": f"{i},{i+1},{i+2},{i+3}", "alias": f"etp{i}", "speed": "100000",
+                            "admin_status": "up"} for i, port in zip((0, 4), ports)},
+            "SCHEDULER": {"scheduler.0": {"type": "DWRR", "weight": "14"},
+                          "scheduler.1": {"type": "DWRR", "weight": "15"}},
+            "QUEUE": {f"{port}|0": {"scheduler": "scheduler.0"} for port in ports},
+        }
+        patch = jsonpatch.JsonPatch([{"op": "replace", "path": f"/QUEUE/{port}|0/scheduler", "value": "scheduler.1"}
+                                     for port in ports])
+
+        with mock.patch.object(ps.RequiredValueIdentifier, "_get_asic", return_value="unknown"):
+            actual = self.create_patch_sorter(current_config).sort(patch)
+
+        config = current_config
+        for change in actual:
+            downs = [op for op in change.patch if op["path"].endswith("/admin_status") and op["value"] == "down"]
+            self.assertLessEqual(len(downs), 1, list(change.patch))
+            config = change.apply(config)
+        self.assertEqual(patch.apply(current_config), config)
 
     def create_patch_sorter(self, config=None, sort_algorithm=None):
         if config is None:

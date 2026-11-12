@@ -1226,3 +1226,269 @@ class TestPathAddressing(unittest.TestCase):
         check(config={"ANOTHER_TABLE": {}, "TABLE":{"key1":{"key11":{"key111":[1,2,3,4,5]}}}},
               path="/TABLE/key1/key11/key111/5",
               expected=False)
+<<<<<<< HEAD
+=======
+
+    def test_configdb_sorted_keys_by_backlinks__counts_cached_per_schema_xpath(self):
+        config = {"PORT": {"Ethernet0": {}, "Ethernet4": {}, "Ethernet8": {}}}
+        expected = gu_common.PathAddressing(gu_common.ConfigWrapper()).configdb_sorted_keys_by_backlinks(
+            "/PORT", config)
+        sy = self.path_addressing._create_sonic_yang_with_loaded_models()
+
+        with mock.patch.object(sy, "find_schema_dependencies", wraps=sy.find_schema_dependencies) as lookup:
+            first = self.path_addressing.configdb_sorted_keys_by_backlinks("/PORT", config)
+            second = self.path_addressing.configdb_sorted_keys_by_backlinks("/PORT", config)
+
+        self.assertEqual(expected, first)
+        self.assertEqual(expected, second)
+        # Every PORT key maps to the same schema node, so libyang is asked once.
+        self.assertEqual(1, lookup.call_count)
+
+    def test_configdb_sorted_keys_by_backlinks__other_models__counts_recomputed(self):
+        config = {"PORT": {"Ethernet0": {}}}
+        self.path_addressing.configdb_sorted_keys_by_backlinks("/PORT", config)
+
+        with mock.patch.object(self.sy_only_models, "find_schema_dependencies",
+                               wraps=self.sy_only_models.find_schema_dependencies) as lookup:
+            self.path_addressing.configdb_sorted_keys_by_backlinks("/PORT", config, sy=self.sy_only_models)
+
+        self.assertEqual(1, lookup.call_count)
+
+
+class TestRedactForLog(unittest.TestCase):
+    OPS = [{"op": "add", "path": "/BGP_NEIGHBOR/default|10.0.0.1/auth_password", "value": "Md5-pw-1"},
+           {"op": "add", "path": "/PORT/Ethernet0/mtu", "value": "9100"}]
+
+    def setUp(self):
+        gu_common._redaction_failure_logged = False
+
+    @staticmethod
+    def fake_redact(patch):
+        ops = getattr(patch, "patch", patch)
+        return [dict(op, value="<redacted>") if op["path"].endswith("auth_password") else op for op in ops]
+
+    def redact_module(self, redact=None, missing=False):
+        module = types.ModuleType("master_key_manager.master_key_encryption_config")
+        module.REDACTED = "<redacted>"
+        if not missing:
+            module.redact_secrets = redact or self.fake_redact
+        return mock.patch.dict("sys.modules", {
+            "master_key_manager": types.ModuleType("master_key_manager"),
+            "master_key_manager.master_key_encryption_config": module,
+        })
+
+    def test_json_patch_and_change_print_as_json(self):
+        with self.redact_module():
+            for patch_obj in (jsonpatch.JsonPatch(self.OPS), gu_common.JsonChange(jsonpatch.JsonPatch(self.OPS))):
+                logged = gu_common.redact_for_log(patch_obj)
+                self.assertNotIn("Md5-pw-1", logged)
+                self.assertEqual(json.loads(logged)[1], self.OPS[1])
+        # An unregistered-only patch logs exactly as it printed before.
+        port_only = jsonpatch.JsonPatch(self.OPS[1:])
+        with self.redact_module():
+            self.assertEqual(gu_common.redact_for_log(port_only), str(port_only))
+
+    def test_list_prints_as_list(self):
+        with self.redact_module():
+            logged = gu_common.redact_for_log(copy.deepcopy(self.OPS))
+        self.assertIsInstance(logged, list)
+        self.assertEqual(logged[0]["value"], "<redacted>")
+
+    def test_patch_is_untouched(self):
+        patch_obj = jsonpatch.JsonPatch(copy.deepcopy(self.OPS))
+        with self.redact_module():
+            gu_common.redact_for_log(patch_obj)
+        self.assertEqual(patch_obj.patch, self.OPS)
+
+    def test_without_the_encryption_library_the_patch_is_logged_as_is(self):
+        patch_obj = jsonpatch.JsonPatch(self.OPS)
+        with mock.patch.dict("sys.modules", {"master_key_manager": None}):
+            self.assertIs(gu_common.redact_for_log(patch_obj), patch_obj)
+
+    def test_library_without_redact_secrets_logs_nothing_of_the_patch_and_warns_once(self):
+        logger = MagicMock()
+        with self.redact_module(missing=True), \
+                patch.object(gu_common.genericUpdaterLogging, "get_logger", return_value=logger):
+            self.assertEqual(gu_common.redact_for_log(jsonpatch.JsonPatch(self.OPS)), gu_common.PATCH_NOT_LOGGED)
+            self.assertEqual(gu_common.redact_for_log(jsonpatch.JsonPatch(self.OPS)), gu_common.PATCH_NOT_LOGGED)
+        logger.log_warning.assert_called_once()
+
+    def test_redaction_failure_logs_nothing_of_the_patch(self):
+        def boom(patch):
+            raise RuntimeError()
+        with self.redact_module(boom):
+            logged = gu_common.redact_for_log(jsonpatch.JsonPatch(self.OPS))
+        self.assertEqual(logged, gu_common.PATCH_NOT_LOGGED)
+
+    def test_error_text_without_redact_secrets_is_not_logged(self):
+        error = ValueError("tested value Md5-pw-1 at /PORT/Ethernet0/mtu 9100 failed")
+        with self.redact_module(missing=True):
+            self.assertEqual(gu_common.redact_error_for_log(error, self.OPS), gu_common.ERROR_NOT_LOGGED)
+
+    def test_error_text_is_masked(self):
+        test_op = [{"op": "test", "path": "/BGP_NEIGHBOR/default|10.0.0.1/auth_password", "value": "secret"}]
+        config = {"BGP_NEIGHBOR": {"default|10.0.0.1": {"auth_password": "other"}}}
+        with self.assertRaises(jsonpatch.JsonPatchTestFailed) as raised:
+            jsonpatch.JsonPatch(test_op).apply(config)
+        self.assertIn("secret", str(raised.exception))
+        with self.redact_module():
+            text = gu_common.redact_error_for_log(raised.exception, test_op)
+        self.assertNotIn("secret", text)
+        self.assertIn("<redacted>", text)
+
+    def test_error_text_masks_secrets_inside_an_entry_value(self):
+        entry = {"asn": "65100", "auth_password": "secret"}
+        ops = [{"op": "add", "path": "/BGP_NEIGHBOR/default|10.0.0.1", "value": entry}]
+        error = ValueError("cannot add {'asn': '65100', 'auth_password': 'secret'}")
+        with self.redact_module(lambda p: [dict(ops[0], value={"asn": "65100", "auth_password": "<redacted>"})]):
+            text = gu_common.redact_error_for_log(error, jsonpatch.JsonPatch(ops))
+        self.assertEqual(text, "cannot add {'asn': '65100', 'auth_password': '<redacted>'}")
+
+    def test_error_text_without_the_encryption_library_is_unchanged(self):
+        with mock.patch.dict("sys.modules", {"master_key_manager": None}):
+            self.assertEqual(gu_common.redact_error_for_log(ValueError("secret"), self.OPS), "secret")
+
+    def replace_setting_a_password(self, apply_error=None):
+        """Run ConfigReplacer.replace -> PatchApplier.apply on a target that sets a BGP password,
+        with only the config DB, change applier and patch sorter faked. Returns the logger mock and
+        the error raised, if any."""
+        from generic_config_updater import generic_updater as gu
+        old = {"BGP_NEIGHBOR": {"default|10.0.0.1": {"asn": "65100"}}, "PORT": {"Ethernet0": {"mtu": "9000"}}}
+        target = copy.deepcopy(old)
+        target["BGP_NEIGHBOR"]["default|10.0.0.1"]["auth_password"] = "Md5-pw-1"
+        target["PORT"]["Ethernet0"]["mtu"] = "9100"
+        config_wrapper = MagicMock()
+        config_wrapper.get_config_db_as_json.side_effect = [old, old, target, target]
+        config_wrapper.get_empty_tables.return_value = []
+        patch_wrapper = MagicMock()
+        patch_wrapper.generate_patch.side_effect = jsonpatch.make_patch
+        patch_wrapper.simulate_config_db_patch.side_effect = lambda p, c: p.apply(c)
+        patch_wrapper.diff_json.return_value = []
+        patchsorter = MagicMock()
+        patchsorter.sort.side_effect = lambda p, trace_io=None: [gu_common.JsonChange(jsonpatch.JsonPatch([op])) for op in p]
+        changeapplier = MagicMock()
+        changeapplier.apply.side_effect = apply_error or (lambda config, change: change.patch.apply(config))
+        logger = MagicMock()
+        raised = None
+        with self.redact_module(), patch.object(gu_common.genericUpdaterLogging, "get_logger", return_value=logger):
+            applier = gu.PatchApplier(patchsorter=patchsorter, changeapplier=changeapplier,
+                                      config_wrapper=config_wrapper, patch_wrapper=patch_wrapper)
+            replacer = gu.ConfigReplacer(patch_applier=applier, config_wrapper=config_wrapper,
+                                         patch_wrapper=patch_wrapper)
+            try:
+                replacer.replace(target)
+            except Exception as e:
+                raised = e
+        return logger, raised
+
+    def test_replace_logs_no_password_whatever_the_log_line(self):
+        logger, raised = self.replace_setting_a_password()
+        self.assertIsNone(raised)
+        messages = [str(arg) for c in logger.mock_calls for arg in c.args]
+        self.assertTrue(any("<redacted>" in m for m in messages), "the patch was never logged")
+        self.assertEqual([m for m in messages if "Md5-pw-1" in m], [])
+
+    def test_replace_error_text_is_masked(self):
+        def fail(config, change):
+            if "auth_password" not in change.patch.patch[0]["path"]:
+                return change.patch.apply(config)
+            raise jsonpatch.JsonPointerException("member 'x' not found in {}".format(change.patch.patch))
+        _, raised = self.replace_setting_a_password(fail)
+        self.assertIsInstance(raised, gu_common.GenericConfigUpdaterError)
+        self.assertNotIn("Md5-pw-1", str(raised))
+        self.assertIn("<redacted>", str(raised))
+        self.assertIsNone(raised.__cause__)
+
+    def test_replace_error_without_a_secret_is_raised_as_is(self):
+        def fail(config, change):
+            raise jsonpatch.JsonPointerException("member 'x' not found")
+        _, raised = self.replace_setting_a_password(fail)
+        self.assertIsInstance(raised, jsonpatch.JsonPointerException)
+
+    def test_ops_without_values_keeps_the_schema_names_only(self):
+        ops = [{"op": "replace", "path": "/PORT/Ethernet0/mtu", "value": "9000"},
+               {"op": "add", "path": "/SNMP_COMMUNITY/Secret-community-1", "value": {"TYPE": "RW"}},
+               {"op": "remove", "path": "/TACPLUS_SERVER"},
+               {"op": "move", "from": "/ACL_RULE/R1|A/PRIORITY", "path": "/ACL_RULE/R1|B/PRIORITY"}]
+        self.assertEqual(gu_common.ops_without_values(ops),
+                         [{"op": "replace", "path": "/PORT/mtu"},
+                          {"op": "add", "path": "/SNMP_COMMUNITY"},
+                          {"op": "remove", "path": "/TACPLUS_SERVER"},
+                          {"op": "move", "from": "/ACL_RULE/PRIORITY", "path": "/ACL_RULE/PRIORITY"}])
+
+    def test_config_mismatch_logs_where_it_differs_and_nothing_an_operator_set(self):
+        # A TACACS passkey is not registered with the master key, so redaction would leave it in
+        # the clear, and an SNMP community is the row key rather than a value.
+        from generic_config_updater import generic_updater as gu
+        target = {"PORT": {"Ethernet0": {"mtu": "9100"}},
+                  "SNMP_COMMUNITY": {"public": {"TYPE": "RO"}},
+                  "TACPLUS_SERVER": {"1.2.3.4": {"passkey": "Old-pw-0"}}}
+        actual = {"PORT": {"Ethernet0": {"mtu": "9000"}},
+                  "SNMP_COMMUNITY": {"public": {"TYPE": "RO"}, "Secret-community-1": {"TYPE": "RW"}},
+                  "TACPLUS_SERVER": {"1.2.3.4": {"passkey": "Tacacs-pw-1"}}}
+        logger = MagicMock()
+        with self.redact_module():
+            diffs = gu.report_config_mismatch(
+                gu_common.PatchWrapper(config_wrapper=MagicMock()), logger, "asic0", {"PORT"},
+                target, actual)
+        self.assertEqual([call[0] for call in logger.mock_calls], ["log_warning", "log_error"])
+        warning, error = [str(call.args[0]) for call in logger.mock_calls]
+        # On a multi-ASIC device the two lines interleave, so each must name its own scope.
+        self.assertTrue(warning.startswith("asic0: ") and error.startswith("asic0: "),
+                        (warning, error))
+        # Table and field are schema names and survive; the row key and the value do not.
+        for text in ("/PORT/mtu", "/SNMP_COMMUNITY", "/TACPLUS_SERVER/passkey"):
+            self.assertIn(text, error)
+        self.assertNotIn("/PORT", warning)  # the warning names the other writer's tables only
+        for secret in ("Tacacs-pw-1", "Old-pw-0", "Secret-community-1", "Ethernet0", "1.2.3.4",
+                       "9000", "value"):
+            self.assertNotIn(secret, warning + error)
+        # The caller still gets the operations whole; only the log drops what an operator set.
+        self.assertEqual(sorted(op["path"] for op in diffs),
+                         ["/PORT/Ethernet0/mtu", "/SNMP_COMMUNITY/Secret-community-1",
+                          "/TACPLUS_SERVER/1.2.3.4/passkey"])
+        self.assertTrue(any(op.get("value") == "9000" for op in diffs))
+
+    @staticmethod
+    def raw_interpolations(source, name="<source>"):
+        """Every (line, call, name) in *source* where a log call or an error f-string
+        interpolates one of the bare names below. Read as syntax, not as lines: a call and the
+        name it interpolates need not share one."""
+        raw = {"patch", "change", "changes", "patch_ops", "yang_patch", "diffs", "foreign",
+               "unconverged"}
+        found = set()
+        for node in ast.walk(ast.parse(source, name)):
+            if not isinstance(node, ast.Call):
+                continue
+            called = getattr(node.func, "attr", None) or getattr(node.func, "id", "")
+            if not (re.match(r"log_\w+$", called) or called.endswith("Error")):
+                continue
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.FormattedValue) and isinstance(inner.value, ast.Name) \
+                        and inner.value.id in raw:
+                    found.add((inner.lineno, called, inner.value.id))
+        return sorted(found)
+
+    def test_gcu_log_lines_never_interpolate_a_raw_patch(self):
+        # Anything a log call prints must go through redact_for_log or ops_without_values, or the
+        # values reach syslog in clear.
+        root = os.path.dirname(gu_common.__file__)
+        offenders = []
+        for name in ("generic_updater.py", "gu_common.py", "main.py", "patch_sorter.py"):
+            with open(os.path.join(root, name)) as fh:
+                offenders += ["{}:{}: {}({{{}}})".format(name, line, call, raw)
+                              for line, call, raw in self.raw_interpolations(fh.read(), name)]
+        self.assertEqual(offenders, [])
+
+    def test_the_raw_patch_guard_sees_a_call_wrapped_over_several_lines(self):
+        # A wrapped call holds the name on none of the lines that carry the call itself.
+        source = ("logger.log_error(f'at: {diffs}')\n"
+                  "logger.log_warning(\n"
+                  "    'drift, '\n"
+                  "    f'another writer was active: {foreign}')\n"
+                  "raise GenericConfigUpdaterError(f'{patch}')\n"
+                  "logger.log_error(f'at: {ops_without_values(diffs)}')\n")
+        self.assertEqual([(call, raw) for _, call, raw in self.raw_interpolations(source)],
+                         [("log_error", "diffs"), ("log_warning", "foreign"),
+                          ("GenericConfigUpdaterError", "patch")])
+>>>>>>> 22e97f8d (NOS-15510: [gcu] take ports admin down in one step and create a new table in one step (#1365))
