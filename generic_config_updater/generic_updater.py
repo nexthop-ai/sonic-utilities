@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import IO, Optional
 from .gu_common import HOST_NAMESPACE, GenericConfigUpdaterError, EmptyTableError, ConfigWrapper, \
-                    DryRunConfigWrapper, JsonChange, PatchWrapper, genericUpdaterLogging
+                    DryRunConfigWrapper, JsonChange, PatchWrapper, genericUpdaterLogging, \
+                    ops_without_values
 from .patch_sorter import StrictPatchSorter, NonStrictPatchSorter, ConfigSplitter, \
                         TablesWithoutYangConfigSplitter, IgnorePathsFromYangConfigSplitter
 from .change_applier import ChangeApplier, DryRunChangeApplier
@@ -16,6 +17,56 @@ from sonic_py_common import multi_asic
 
 CHECKPOINTS_DIR = "/etc/sonic/checkpoints"
 CHECKPOINT_EXT = ".cp.json"
+
+
+def op_table_name(operation):
+    """The top-level ConfigDB table an operation's path refers to, None for the whole config."""
+    parts = jsonpointer.JsonPointer(operation["path"]).parts
+    return parts[0] if parts else None
+
+
+def get_patch_table_names(patch):
+    """The set of top-level ConfigDB table names a patch touches.
+
+    None when an operation targets the whole config, where the touched tables cannot be
+    narrowed down.
+    """
+    table_names = set()
+    for operation in patch:
+        table_name = op_table_name(operation)
+        if table_name is None:
+            return None
+        table_names.add(table_name)
+    return table_names
+
+
+def report_config_mismatch(patch_wrapper, logger, scope, patched_tables, target_config, new_config):
+    """Return every operation by which *new_config* differs from *target_config*, logged.
+
+    Entries naming a table the patch does not write to are logged separately: a patch cannot
+    have put them there, so something else wrote to ConfigDB between the two reads. That is
+    the only record of which other writer was active. *patched_tables* of None means the
+    tables the patch touches could not be narrowed down.
+    """
+    diffs = patch_wrapper.diff_json(target_config, new_config)
+    if not diffs:
+        return diffs
+
+    foreign = [] if patched_tables is None else \
+        [op for op in diffs if op_table_name(op) not in patched_tables]
+    if foreign:
+        logger.log_warning(
+            f"{scope}: ConfigDB entries this patch does not write to differ from the target config, "
+            f"so another writer was active while it was being applied: {ops_without_values(foreign)}")
+    logger.log_error(f"{scope}: ConfigDB did not reach the target config at: "
+                     f"{ops_without_values(diffs)}")
+    return diffs
+
+
+def mismatch_tables_text(operations):
+    """A readable list of the tables *operations* touch, empty when none can be named."""
+    table_names = sorted({name for name in map(op_table_name, operations) if name is not None})
+    return f" in table(s): {', '.join(table_names)}" if table_names else ""
 
 
 def extract_scope(path):
@@ -154,8 +205,13 @@ class PatchApplier:
         new_config = self.config_wrapper.get_config_db_as_json()
         self.changeapplier.remove_backend_tables_from_config(target_config)
         self.changeapplier.remove_backend_tables_from_config(new_config)
-        if not (self.patch_wrapper.verify_same_json(target_config, new_config)):
-            raise GenericConfigUpdaterError(f"{scope}: after applying patch to config, there are still some parts not updated")
+        unconverged = report_config_mismatch(
+            self.patch_wrapper, self.logger, scope, get_patch_table_names(patch),
+            target_config, new_config)
+        if unconverged:
+            raise GenericConfigUpdaterError(
+                f"{scope}: after applying patch to config, there are still some parts not updated"
+                f"{mismatch_tables_text(unconverged)}")
 
         self.logger.log_notice(f"{scope} patch application completed.")
 
@@ -186,8 +242,13 @@ class ConfigReplacer:
         new_config = self.config_wrapper.get_config_db_as_json()
         self.patch_applier.changeapplier.remove_backend_tables_from_config(target_config)
         self.patch_applier.changeapplier.remove_backend_tables_from_config(new_config)
-        if not (self.patch_wrapper.verify_same_json(target_config, new_config)):
-            raise GenericConfigUpdaterError(f"After replacing config, there is still some parts not updated")
+        unconverged = report_config_mismatch(
+            self.patch_wrapper, self.logger, self.scope if self.scope else HOST_NAMESPACE,
+            get_patch_table_names(patch), target_config, new_config)
+        if unconverged:
+            raise GenericConfigUpdaterError(
+                "After replacing config, there is still some parts not updated"
+                f"{mismatch_tables_text(unconverged)}")
 
         self.logger.log_notice("Config replacement completed.")
 

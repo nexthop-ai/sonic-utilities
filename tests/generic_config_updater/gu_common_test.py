@@ -814,6 +814,65 @@ class TestPatchWrapper(unittest.TestCase):
 
         self.assertTrue(patch_wrapper.verify_same_json(after_update_config_db_cropped, after_update_sonic_yang_as_config_db))
 
+    def test_diff_json__no_diff__returns_empty(self):
+        # Arrange
+        patch_wrapper = gu_common.PatchWrapper()
+
+        # Act and assert
+        self.assertEqual([], patch_wrapper.diff_json(Files.CONFIG_DB_AS_JSON, Files.CONFIG_DB_AS_JSON))
+
+    def test_diff_json__diff__returns_the_differing_operations(self):
+        # Arrange
+        patch_wrapper = gu_common.PatchWrapper()
+        expected = {"PORT": {"Ethernet0": {"speed": "40000", "admin_status": "up"}}}
+        actual = {"PORT": {"Ethernet0": {"speed": "40000", "admin_status": "down"}}}
+
+        # Act
+        diffs = patch_wrapper.diff_json(expected, actual)
+
+        # Assert
+        self.assertEqual(
+            [{"op": "replace", "path": "/PORT/Ethernet0/admin_status", "value": "down"}], diffs)
+
+    def test_diff_json__more_differences_than_the_cap__stops_at_the_cap(self):
+        # Arrange
+        patch_wrapper = gu_common.PatchWrapper()
+        count = gu_common.PatchWrapper.MAX_REPORTED_DIFFS + 5
+        expected = {"PORT": {f"Ethernet{i}": {"admin_status": "up"} for i in range(count)}}
+        actual = {"PORT": {f"Ethernet{i}": {"admin_status": "down"} for i in range(count)}}
+
+        # Act
+        diffs = patch_wrapper.diff_json(expected, actual)
+
+        # Assert
+        self.assertEqual(gu_common.PatchWrapper.MAX_REPORTED_DIFFS, len(diffs))
+
+    def test_verify_same_json__differs_past_the_cap__still_false(self):
+        # The cap bounds what is reported, never whether the two are judged the same.
+        # Arrange
+        patch_wrapper = gu_common.PatchWrapper()
+        count = gu_common.PatchWrapper.MAX_REPORTED_DIFFS + 5
+        expected = {"PORT": {f"Ethernet{i}": {"admin_status": "up"} for i in range(count)}}
+        actual = {"PORT": {f"Ethernet{i}": {"admin_status": "down"} for i in range(count)}}
+
+        # Act and assert
+        self.assertFalse(patch_wrapper.verify_same_json(expected, actual))
+
+    def test_ops_without_values_keeps_the_schema_names_only(self):
+        # Arrange
+        ops = [{"op": "replace", "path": "/PORT/Ethernet0/mtu", "value": "9000"},
+               {"op": "add", "path": "/SNMP_COMMUNITY/Secret-community-1", "value": {"TYPE": "RW"}},
+               {"op": "remove", "path": "/TACPLUS_SERVER"},
+               {"op": "move", "from": "/ACL_RULE/R1|A/PRIORITY", "path": "/ACL_RULE/R1|B/PRIORITY"}]
+
+        # Act and assert
+        self.assertEqual(gu_common.ops_without_values(ops),
+                         [{"op": "replace", "path": "/PORT/mtu"},
+                          {"op": "add", "path": "/SNMP_COMMUNITY"},
+                          {"op": "remove", "path": "/TACPLUS_SERVER"},
+                          {"op": "move", "from": "/ACL_RULE/PRIORITY", "path": "/ACL_RULE/PRIORITY"}])
+
+
 class TestPathAddressing(unittest.TestCase):
     def setUp(self):
         self.path_addressing = gu_common.PathAddressing(gu_common.ConfigWrapper())

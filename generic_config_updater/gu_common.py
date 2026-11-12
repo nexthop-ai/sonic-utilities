@@ -435,7 +435,35 @@ def remove_empty_leaf_lists(config):
     return config
 
 
+def _path_without_row_key(path):
+    """*path* with its second token removed. A ConfigDB path is ``/table/row_key/field``, and the
+    row key is its one operator-supplied token: a table and a field are names from the schema,
+    but a row key can be a credential, as SNMP_COMMUNITY's is."""
+    tokens = path.split("/")
+    return "/".join(tokens[:2] + tokens[3:]) if len(tokens) > 2 else path
+
+
+def ops_without_values(operations):
+    """Return *operations* carrying only the schema names that say where they act.
+
+    The drift report describes ConfigDB as it was found rather than the patch, so it can
+    carry values and row keys the patch never held: another writer's, or an operator's.
+    """
+    loggable = []
+    for op in operations:
+        entry = {}
+        for key in ("op", "path", "from"):
+            if key in op:
+                entry[key] = op[key] if key == "op" else _path_without_row_key(op[key])
+        loggable.append(entry)
+    return loggable
+
+
 class PatchWrapper:
+    # The structural diff is built in full; this caps only how many of its operations are
+    # reported and logged.
+    MAX_REPORTED_DIFFS = 20
+
     def __init__(self, config_wrapper=None, scope=multi_asic.DEFAULT_NAMESPACE):
         self.scope = scope
         self.config_wrapper = config_wrapper if config_wrapper is not None else ConfigWrapper(self.scope)
@@ -459,8 +487,15 @@ class PatchWrapper:
         return len(cropped_config_db.keys()) == len(config_db.keys())
 
     def verify_same_json(self, expected, actual):
-        # patch will be [] if no diff, [] evaluates to False
-        return not jsonpatch.make_patch(expected, actual)
+        return not self.diff_json(expected, actual)
+
+    def diff_json(self, expected, actual):
+        """Return the patch operations by which *actual* differs from *expected*.
+
+        An empty list means the two are equivalent. No more than MAX_REPORTED_DIFFS
+        operations are returned.
+        """
+        return jsonpatch.make_patch(expected, actual).patch[:self.MAX_REPORTED_DIFFS]
 
     def generate_patch(self, current, target):
         return jsonpatch.make_patch(current, target)

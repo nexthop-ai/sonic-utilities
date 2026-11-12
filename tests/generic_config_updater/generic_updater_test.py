@@ -1,4 +1,5 @@
 import json
+import jsonpatch
 import os
 import shutil
 import unittest
@@ -8,12 +9,17 @@ from unittest.mock import MagicMock, Mock, call, patch
 from .gutest_helpers import create_side_effect_dict, create_side_effect_skipfirstarg_dict, Files
 
 import generic_config_updater.generic_updater as gu
+import generic_config_updater.gu_common as gu_common
 import generic_config_updater.patch_sorter as ps
 import generic_config_updater.change_applier as ca
 
 # import sys
 # sys.path.insert(0,'../../generic_config_updater')
 # import generic_updater as gu
+
+# What a mocked patch wrapper reports when the config is meant not to have converged.
+NOT_UPDATED_DIFFS = [{"op": "replace", "path": "/ACL_TABLE/EVERFLOW/stage", "value": "egress"}]
+
 
 class TestPatchApplier(unittest.TestCase):
     def test_apply__invalid_patch_producing_empty_tables__failure(self):
@@ -44,8 +50,88 @@ class TestPatchApplier(unittest.TestCase):
             [call(Files.MULTI_OPERATION_CONFIG_DB_PATCH, Files.CONFIG_DB_AS_JSON)])
         patch_applier.patchsorter.sort.assert_has_calls([call(Files.MULTI_OPERATION_CONFIG_DB_PATCH, trace_io=None)])
         patch_applier.changeapplier.apply.assert_called()
-        patch_applier.patch_wrapper.verify_same_json.assert_has_calls(
+        patch_applier.patch_wrapper.diff_json.assert_has_calls(
             [call(Files.CONFIG_DB_AFTER_MULTI_PATCH, Files.CONFIG_DB_AFTER_MULTI_PATCH)])
+
+    def test_apply__patched_table_did_not_converge__failure(self):
+        # Every difference is in the patch's own table, so no other writer may be named.
+        # Arrange
+        json_patch = jsonpatch.JsonPatch(
+            [{"op": "add", "path": "/VLAN_MEMBER",
+              "value": {"Vlan100|Ethernet8": {"tagging_mode": "untagged"}}}])
+        old_config = {"PORT": {"Ethernet8": {"admin_status": "up"}}}
+        new_config = {"PORT": {"Ethernet8": {"admin_status": "up"}}}
+        patch_applier = self.__create_patch_applier_with_real_patch_wrapper(old_config, new_config)
+
+        # Act and assert
+        with self.assertRaises(gu.GenericConfigUpdaterError) as context:
+            patch_applier.apply(json_patch)
+        self.assertIn("in table(s): VLAN_MEMBER", str(context.exception))
+        warnings = [args[0] for args, _ in patch_applier.logger.log_warning.call_args_list]
+        self.assertEqual([w for w in warnings if "another writer" in w], [], warnings)
+        errors = [args[0] for args, _ in patch_applier.logger.log_error.call_args_list]
+        self.assertTrue(any("ConfigDB did not reach the target config at" in e for e in errors), errors)
+        self.assertTrue(any("/VLAN_MEMBER" in e for e in errors), errors)
+
+    def test_apply__another_writer_touched_an_unpatched_table__names_it(self):
+        # Arrange
+        json_patch = jsonpatch.JsonPatch(
+            [{"op": "replace", "path": "/PORT/Ethernet8/admin_status", "value": "down"}])
+        old_config = {"PORT": {"Ethernet8": {"admin_status": "up"}}}
+        new_config = {"PORT": {"Ethernet8": {"admin_status": "down"}},
+                      "TACPLUS_SERVER": {"1.2.3.4": {"passkey": "Tacacs-pw-1"}}}
+        patch_applier = self.__create_patch_applier_with_real_patch_wrapper(old_config, new_config)
+
+        # Act and assert
+        with self.assertRaises(gu.GenericConfigUpdaterError) as context:
+            patch_applier.apply(json_patch)
+        self.assertIn("in table(s): TACPLUS_SERVER", str(context.exception))
+        warnings = [args[0] for args, _ in patch_applier.logger.log_warning.call_args_list]
+        drift = [w for w in warnings if "another writer" in w]
+        self.assertEqual(len(drift), 1, warnings)
+        self.assertIn("/TACPLUS_SERVER", drift[0])
+        # On a multi-ASIC device the lines interleave, so each must name its own scope.
+        self.assertTrue(drift[0].startswith("localhost: "), drift[0])
+        # The drift report describes ConfigDB, so what an operator set there stays out of it.
+        for secret in ("Tacacs-pw-1", "1.2.3.4"):
+            self.assertNotIn(secret, drift[0])
+
+    def test_apply__whole_config_patch_did_not_converge__names_no_other_writer(self):
+        # A path-"" operation leaves the patched tables unknowable, so every difference goes
+        # unattributed rather than being read as another writer.
+        # Arrange
+        json_patch = jsonpatch.JsonPatch(
+            [{"op": "replace", "path": "",
+              "value": {"PORT": {"Ethernet8": {"admin_status": "down"}}}}])
+        old_config = {"PORT": {"Ethernet8": {"admin_status": "up"}}}
+        new_config = {"PORT": {"Ethernet8": {"admin_status": "up"}}}
+        patch_applier = self.__create_patch_applier_with_real_patch_wrapper(old_config, new_config)
+
+        # Act and assert
+        with self.assertRaises(gu.GenericConfigUpdaterError) as context:
+            patch_applier.apply(json_patch)
+        self.assertIn("in table(s): PORT", str(context.exception))
+        warnings = [args[0] for args, _ in patch_applier.logger.log_warning.call_args_list]
+        self.assertEqual([w for w in warnings if "another writer" in w], [], warnings)
+
+    def __create_patch_applier_with_real_patch_wrapper(self, old_config, new_config):
+        # The real PatchWrapper runs the comparison under test instead of mocking it away.
+        config_wrapper = Mock()
+        config_wrapper.get_config_db_as_json.side_effect = [old_config, new_config]
+        config_wrapper.get_empty_tables.return_value = []
+
+        changeapplier = Mock()
+        changeapplier.apply.return_value = None
+        changeapplier.remove_backend_tables_from_config.return_value = None
+
+        patchsorter = Mock()
+        patchsorter.sort.return_value = [Mock()]
+
+        patch_applier = gu.PatchApplier(
+            patchsorter, changeapplier, config_wrapper,
+            gu_common.PatchWrapper(config_wrapper=config_wrapper))
+        patch_applier.logger = Mock()
+        return patch_applier
 
     def __create_patch_applier(self,
                                changes=None,
@@ -63,10 +149,10 @@ class TestPatchApplier(unittest.TestCase):
             create_side_effect_dict(
                 {(str(Files.MULTI_OPERATION_CONFIG_DB_PATCH), str(Files.CONFIG_DB_AS_JSON)):
                     Files.CONFIG_DB_AFTER_MULTI_PATCH})
-        patch_wrapper.verify_same_json.side_effect = \
+        patch_wrapper.diff_json.side_effect = \
             create_side_effect_dict(
                 {(str(Files.CONFIG_DB_AFTER_MULTI_PATCH), str(Files.CONFIG_DB_AFTER_MULTI_PATCH)):
-                    verified_same_config})
+                    [] if verified_same_config else NOT_UPDATED_DIFFS})
 
         changes = [Mock(), Mock()] if not changes else changes
         patchsorter = Mock()
@@ -102,7 +188,7 @@ class TestConfigReplacer(unittest.TestCase):
         config_replacer.patch_applier.apply.assert_has_calls(
             [call(Files.MULTI_OPERATION_CONFIG_DB_PATCH, trace_io=None)]
         )
-        config_replacer.patch_wrapper.verify_same_json.assert_has_calls(
+        config_replacer.patch_wrapper.diff_json.assert_has_calls(
             [call(Files.CONFIG_DB_AFTER_MULTI_PATCH, Files.CONFIG_DB_AFTER_MULTI_PATCH)])
 
     def __create_config_replacer(self, changes=None, verified_same_config=True):
@@ -115,10 +201,10 @@ class TestConfigReplacer(unittest.TestCase):
             create_side_effect_dict(
                 {(str(Files.CONFIG_DB_AS_JSON), str(Files.CONFIG_DB_AFTER_MULTI_PATCH)):
                     Files.MULTI_OPERATION_CONFIG_DB_PATCH})
-        patch_wrapper.verify_same_json.side_effect = \
+        patch_wrapper.diff_json.side_effect = \
             create_side_effect_dict(
-                {(str(Files.CONFIG_DB_AFTER_MULTI_PATCH), str(Files.CONFIG_DB_AFTER_MULTI_PATCH)): \
-                    verified_same_config})
+                {(str(Files.CONFIG_DB_AFTER_MULTI_PATCH), str(Files.CONFIG_DB_AFTER_MULTI_PATCH)):
+                    [] if verified_same_config else NOT_UPDATED_DIFFS})
 
         changes = [Mock(), Mock()] if not changes else changes
         patchsorter = Mock()
