@@ -44,8 +44,272 @@ class TestPatchApplier(unittest.TestCase):
             [call(Files.MULTI_OPERATION_CONFIG_DB_PATCH, Files.CONFIG_DB_AS_JSON)])
         patch_applier.patchsorter.sort.assert_has_calls([call(Files.MULTI_OPERATION_CONFIG_DB_PATCH, trace_io=None)])
         patch_applier.changeapplier.apply.assert_called()
+<<<<<<< HEAD
         patch_applier.patch_wrapper.verify_same_json.assert_has_calls(
             [call(Files.CONFIG_DB_AFTER_MULTI_PATCH, Files.CONFIG_DB_AFTER_MULTI_PATCH)])
+=======
+        patch_applier.patch_wrapper.diff_json.assert_has_calls(
+            [call(Files.CONFIG_DB_AFTER_MULTI_PATCH, Files.CONFIG_DB_AFTER_MULTI_PATCH,
+                  field_custom_validations=None)])
+
+    def test_apply__restarts_services_once_after_all_changes(self):
+        # Arrange
+        changes = [Mock(), Mock()]
+        patch_applier = self.__create_patch_applier(changes)
+        calls = Mock()
+        calls.attach_mock(patch_applier.changeapplier, "changeapplier")
+        calls.attach_mock(patch_applier.config_wrapper.get_config_db_as_json, "get_config")
+
+        # Act
+        patch_applier.apply(Files.MULTI_OPERATION_CONFIG_DB_PATCH)
+
+        # Assert
+        order = [name for name, _, _ in calls.mock_calls
+                 if name in ("get_config", "changeapplier.apply", "changeapplier.restart_services")]
+        self.assertEqual(order, ["get_config", "changeapplier.apply", "changeapplier.apply",
+                                 "changeapplier.restart_services", "get_config"])
+        patch_applier.changeapplier.restart_services.assert_called_once_with()
+
+    # A 1.00 Gb/s port shaper with two queues asking 800 Mb/s each.
+    OVERSUBSCRIBED_CONFIG = {
+        "SCHEDULER": {
+            "port.shaper": {"meter_type": "bytes", "pir": "125000000"},
+            "q.shaper": {"meter_type": "bytes", "pir": "100000000"},
+        },
+        "QUEUE": {
+            "Ethernet0|1": {"scheduler": "q.shaper"},
+            "Ethernet0|2": {"scheduler": "q.shaper"},
+        },
+        "PORT_QOS_MAP": {"Ethernet0": {"scheduler": "port.shaper"}},
+    }
+
+    WITHIN_BUDGET_CONFIG = {
+        "SCHEDULER": {
+            "port.shaper": {"meter_type": "bytes", "pir": "125000000"},
+            "q.shaper": {"meter_type": "bytes", "pir": "50000000"},
+        },
+        "QUEUE": {
+            "Ethernet0|1": {"scheduler": "q.shaper"},
+            "Ethernet0|2": {"scheduler": "q.shaper"},
+        },
+        "PORT_QOS_MAP": {"Ethernet0": {"scheduler": "port.shaper"}},
+    }
+
+    def test_apply__patch_oversubscribes_a_port__warns_once_with_scope(self):
+        # Arrange
+        patch_applier, patch = self.__create_qos_patch_applier(
+            self.WITHIN_BUDGET_CONFIG, self.OVERSUBSCRIBED_CONFIG)
+
+        # Act
+        patch_applier.apply(patch)
+
+        # Assert
+        warnings = [args[0] for args, _ in patch_applier.logger.log_warning.call_args_list]
+        qos_warnings = [w for w in warnings if "per-queue shapers exceed the port shaper" in w]
+        self.assertEqual(len(qos_warnings), 1, warnings)
+        self.assertTrue(qos_warnings[0].startswith("localhost: "), qos_warnings[0])
+        self.assertIn("Ethernet0: 1.60 Gb/s across 2 shaped queues", qos_warnings[0])
+
+    def test_apply__oversubscription_already_present__stays_silent(self):
+        # An operator who configured this on purpose must not be warned again
+        # by every later patch that leaves QoS alone.
+        # Arrange
+        patch_applier, patch = self.__create_qos_patch_applier(
+            self.OVERSUBSCRIBED_CONFIG, self.OVERSUBSCRIBED_CONFIG)
+
+        # Act
+        patch_applier.apply(patch)
+
+        # Assert
+        warnings = [args[0] for args, _ in patch_applier.logger.log_warning.call_args_list]
+        self.assertEqual([w for w in warnings if "per-queue shapers" in w], [], warnings)
+
+    def test_apply__rejected_patch__is_not_advised_about(self):
+        # The advisory runs after field-operation validation, so a patch it
+        # rejects leaves no advisory about a configuration that never lands.
+        # Arrange
+        patch_applier, patch = self.__create_qos_patch_applier(
+            self.WITHIN_BUDGET_CONFIG, self.OVERSUBSCRIBED_CONFIG)
+        patch_applier.config_wrapper.validate_field_operation.side_effect = ValueError("rejected")
+
+        # Act and assert
+        self.assertRaises(ValueError, patch_applier.apply, patch)
+        warnings = [args[0] for args, _ in patch_applier.logger.log_warning.call_args_list]
+        self.assertEqual([w for w in warnings if "per-queue shapers" in w], [], warnings)
+
+    def test_apply__patch_rejected_by_yang__is_not_advised_about(self):
+        # Arrange
+        patch_applier, patch = self.__create_qos_patch_applier(
+            self.WITHIN_BUDGET_CONFIG, self.OVERSUBSCRIBED_CONFIG)
+        patch_applier.patchsorter.sort.side_effect = ValueError("Given patch will produce invalid config")
+
+        # Act and assert
+        self.assertRaises(ValueError, patch_applier.apply, patch)
+        warnings = [args[0] for args, _ in patch_applier.logger.log_warning.call_args_list]
+        self.assertEqual([w for w in warnings if "per-queue shapers" in w], [], warnings)
+        patch_applier.changeapplier.apply.assert_not_called()
+
+    def test_apply__patch_producing_empty_tables__is_not_advised_about(self):
+        # Arrange
+        patch_applier, patch = self.__create_qos_patch_applier(
+            self.WITHIN_BUDGET_CONFIG, self.OVERSUBSCRIBED_CONFIG)
+        patch_applier.config_wrapper.get_empty_tables.return_value = ["AnyTable"]
+
+        # Act and assert
+        self.assertRaises(gu.EmptyTableError, patch_applier.apply, patch)
+        warnings = [args[0] for args, _ in patch_applier.logger.log_warning.call_args_list]
+        self.assertEqual([w for w in warnings if "per-queue shapers" in w], [], warnings)
+
+    def test_apply__advisory_raises__patch_is_not_failed(self):
+        # A QUEUE scheduler that is not a plain string makes the check raise;
+        # the patch must still be applied.
+        # Arrange
+        broken = dict(self.OVERSUBSCRIBED_CONFIG)
+        broken["QUEUE"] = {"Ethernet0|1": {"scheduler": ["q.shaper"]}}
+        patch_applier, patch = self.__create_qos_patch_applier(
+            self.WITHIN_BUDGET_CONFIG, broken)
+
+        # Act
+        patch_applier.apply(patch)
+
+        # Assert
+        patch_applier.logger.log_debug.assert_called()
+        debugs = [args[0] for args, _ in patch_applier.logger.log_debug.call_args_list]
+        self.assertTrue(any("QoS oversubscription check skipped" in d for d in debugs), debugs)
+
+    def test_apply__drift_in_a_table_the_patch_does_not_write__names_the_other_writer(self):
+        # Arrange
+        patch_applier = self.__create_patch_applier(diffs=[CONCURRENT_WRITE_OP])
+        patch_applier.logger = Mock()
+
+        # Act and assert
+        with self.assertRaises(gu.GenericConfigUpdaterError) as context:
+            patch_applier.apply(Files.MULTI_OPERATION_CONFIG_DB_PATCH)
+        self.assertIn("in table(s): DEVICE_METADATA", str(context.exception))
+        warnings = [args[0] for args, _ in patch_applier.logger.log_warning.call_args_list]
+        self.assertTrue(any("another writer was active" in w for w in warnings), warnings)
+        self.assertTrue(any("DEVICE_METADATA" in w for w in warnings), warnings)
+
+    def test_apply__unconverged_patched_table__error_names_the_table(self):
+        # Arrange
+        patch_applier = self.__create_patch_applier(diffs=[UNCONVERGED_PORT_OP])
+
+        # Act and assert
+        with self.assertRaises(gu.GenericConfigUpdaterError) as context:
+            patch_applier.apply(Files.MULTI_OPERATION_CONFIG_DB_PATCH)
+        self.assertIn("in table(s): PORT", str(context.exception))
+
+    def test_apply__drift_alongside_an_unconverged_table__error_names_both_tables(self):
+        # Arrange
+        patch_applier = self.__create_patch_applier(diffs=[CONCURRENT_WRITE_OP, UNCONVERGED_PORT_OP])
+
+        # Act and assert
+        with self.assertRaises(gu.GenericConfigUpdaterError) as context:
+            patch_applier.apply(Files.MULTI_OPERATION_CONFIG_DB_PATCH)
+        self.assertIn("in table(s): DEVICE_METADATA, PORT", str(context.exception))
+
+    def test_apply__concurrent_write_to_another_table__reports_the_other_writer(self):
+        # The reported failure: the patch's own table converges, but another writer
+        # changes an unrelated table between the two reads of ConfigDB.
+        # Arrange
+        json_patch = jsonpatch.JsonPatch(
+            [{"op": "add", "path": "/VLAN_MEMBER",
+              "value": {"Vlan100|Ethernet8": {"tagging_mode": "untagged"}}}])
+        old_config = {"PORT": {"Ethernet8": {"admin_status": "up"}}}
+        new_config = {
+            "VLAN_MEMBER": {"Vlan100|Ethernet8": {"tagging_mode": "untagged"}},
+            "PORT": {"Ethernet8": {"admin_status": "down"}},
+        }
+        patch_applier = self.__create_patch_applier_with_real_patch_wrapper(old_config, new_config)
+
+        # Act and assert
+        with self.assertRaises(gu.GenericConfigUpdaterError):
+            patch_applier.apply(json_patch)
+        warnings = [args[0] for args, _ in patch_applier.logger.log_warning.call_args_list]
+        self.assertTrue(any("another writer was active" in w for w in warnings), warnings)
+        self.assertTrue(any("PORT" in w for w in warnings), warnings)
+
+    def test_apply__patched_table_did_not_converge__failure(self):
+        # Every difference is in the patch's own table, so no other writer may be named.
+        # Arrange
+        json_patch = jsonpatch.JsonPatch(
+            [{"op": "add", "path": "/VLAN_MEMBER",
+              "value": {"Vlan100|Ethernet8": {"tagging_mode": "untagged"}}}])
+        old_config = {"PORT": {"Ethernet8": {"admin_status": "up"}}}
+        new_config = {"PORT": {"Ethernet8": {"admin_status": "up"}}}
+        patch_applier = self.__create_patch_applier_with_real_patch_wrapper(old_config, new_config)
+
+        # Act and assert
+        with self.assertRaises(gu.GenericConfigUpdaterError) as context:
+            patch_applier.apply(json_patch)
+        self.assertIn("in table(s): VLAN_MEMBER", str(context.exception))
+        # Matched on the text rather than on log_warning itself, which apply also uses for the
+        # QoS advisory.
+        warnings = [args[0] for args, _ in patch_applier.logger.log_warning.call_args_list]
+        self.assertEqual([w for w in warnings if "another writer" in w], [], warnings)
+        errors = [args[0] for args, _ in patch_applier.logger.log_error.call_args_list]
+        self.assertTrue(any("ConfigDB did not reach the target config at" in e for e in errors), errors)
+        self.assertTrue(any("/VLAN_MEMBER" in e for e in errors), errors)
+
+    def test_apply__whole_config_patch_did_not_converge__names_no_other_writer(self):
+        # A path-"" operation leaves the patched tables unknowable, so every difference goes
+        # unattributed rather than being read as another writer.
+        # Arrange
+        json_patch = jsonpatch.JsonPatch(
+            [{"op": "replace", "path": "",
+              "value": {"PORT": {"Ethernet8": {"admin_status": "down"}}}}])
+        old_config = {"PORT": {"Ethernet8": {"admin_status": "up"}}}
+        new_config = {"PORT": {"Ethernet8": {"admin_status": "up"}}}
+        patch_applier = self.__create_patch_applier_with_real_patch_wrapper(old_config, new_config)
+
+        # Act and assert
+        with self.assertRaises(gu.GenericConfigUpdaterError) as context:
+            patch_applier.apply(json_patch)
+        self.assertIn("in table(s): PORT", str(context.exception))
+        warnings = [args[0] for args, _ in patch_applier.logger.log_warning.call_args_list]
+        self.assertEqual([w for w in warnings if "another writer" in w], [], warnings)
+
+    def __create_patch_applier_with_real_patch_wrapper(self, old_config, new_config):
+        # The real PatchWrapper runs the comparison under test instead of mocking it away.
+        config_wrapper = Mock()
+        config_wrapper.get_config_db_as_json.side_effect = [old_config, new_config]
+        config_wrapper.get_empty_tables.return_value = []
+        config_wrapper.remove_null_values.return_value = []
+
+        changeapplier = Mock()
+        changeapplier.apply.return_value = None
+        changeapplier.remove_backend_tables_from_config.return_value = None
+
+        patchsorter = Mock()
+        patchsorter.sort.return_value = [Mock()]
+
+        patch_applier = gu.PatchApplier(
+            patchsorter, changeapplier, config_wrapper,
+            gu_common.PatchWrapper(config_wrapper=config_wrapper))
+        patch_applier.logger = Mock()
+        return patch_applier
+
+    def __create_qos_patch_applier(self, old_config, target_config):
+        patch = jsonpatch.make_patch(old_config, target_config)
+
+        config_wrapper = Mock()
+        config_wrapper.get_config_db_as_json.side_effect = [old_config, target_config]
+        config_wrapper.get_empty_tables.return_value = []
+        config_wrapper.remove_null_values.return_value = []
+
+        patch_wrapper = Mock()
+        patch_wrapper.simulate_config_db_patch.return_value = target_config
+        patch_wrapper.diff_json.return_value = []
+
+        patchsorter = Mock()
+        patchsorter.sort.return_value = [Mock()]
+
+        changeapplier = Mock()
+
+        patch_applier = gu.PatchApplier(patchsorter, changeapplier, config_wrapper, patch_wrapper)
+        patch_applier.logger = Mock()
+        return patch_applier, patch
+>>>>>>> c2e8d2c2 (NOS-22993: [gcu] Restart services that read config only at startup, once per patch (#1382))
 
     def __create_patch_applier(self,
                                changes=None,

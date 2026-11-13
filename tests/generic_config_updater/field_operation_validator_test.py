@@ -467,6 +467,149 @@ class TestValidateFieldOperation:
             target_config
         )
 
+<<<<<<< HEAD
+=======
+    @pytest.mark.parametrize("old_config, target_config, refused_fields", [
+        # GLOBAL row added, by a patch or by a replace/rollback to a config that has it
+        ({"PFC_WD": {"Ethernet0": {"action": "drop"}}},
+         {"PFC_WD": {"Ethernet0": {"action": "drop"}, "GLOBAL": {"POLL_INTERVAL": "100"}}},
+         "POLL_INTERVAL"),
+        # PFC_WD table added with a GLOBAL row
+        ({},
+         {"PFC_WD": {"GLOBAL": {"POLL_INTERVAL": "100"}}},
+         "POLL_INTERVAL"),
+        # field changed in an existing GLOBAL row
+        ({"PFC_WD": {"GLOBAL": {"POLL_INTERVAL": "200"}}},
+         {"PFC_WD": {"GLOBAL": {"POLL_INTERVAL": "100"}}},
+         "POLL_INTERVAL"),
+        # field added to an existing GLOBAL row
+        ({"PFC_WD": {"GLOBAL": {"POLL_INTERVAL": "200"}}},
+         {"PFC_WD": {"GLOBAL": {"POLL_INTERVAL": "200", "BIG_RED_SWITCH": "enable"}}},
+         "BIG_RED_SWITCH"),
+        # GLOBAL row added with two fields: both named, sorted
+        ({},
+         {"PFC_WD": {"GLOBAL": {"POLL_INTERVAL": "100", "BIG_RED_SWITCH": "enable"}}},
+         "BIG_RED_SWITCH, POLL_INTERVAL"),
+    ])
+    @pytest.mark.parametrize("mechanism", ["HARDWARE", "hardware"])
+    @patch("os.path.exists", mock.Mock(return_value=True))
+    @patch("builtins.open", mock_open(read_data='{"tables": {}}'))
+    def test_validate_field_operation_hw_pfcwd_global_refused(self, old_config, target_config, refused_fields,
+                                                              mechanism):
+        config_wrapper = gu_common.ConfigWrapper(scope="asic0")
+        with patch("generic_config_updater.field_operation_validators.read_statedb_entry",
+                   return_value=mechanism) as read_statedb_entry:
+            with pytest.raises(gu_common.IllegalPatchOperationError) as err:
+                config_wrapper.validate_field_operation(old_config, target_config)
+        assert str(err.value) == \
+            "PFC_WD|GLOBAL {} is not supported with hardware based PFC watchdog".format(refused_fields)
+        read_statedb_entry.assert_called_once_with("asic0", "PFC_WD_STATE_TABLE", "PFC_WD", "RECOVERY_MECHANISM")
+
+    @pytest.mark.parametrize("mechanism", ["SOFTWARE", "", None])
+    @patch("os.path.exists", mock.Mock(return_value=True))
+    @patch("builtins.open", mock_open(read_data='{"tables": {}}'))
+    def test_validate_field_operation_sw_pfcwd_global_allowed(self, mechanism):
+        old_config = {"PFC_WD": {"GLOBAL": {"POLL_INTERVAL": "200"}}}
+        target_config = {"PFC_WD": {"GLOBAL": {"POLL_INTERVAL": "100", "BIG_RED_SWITCH": "enable"}}}
+        config_wrapper = gu_common.ConfigWrapper(scope="asic0")
+        with patch("generic_config_updater.field_operation_validators.read_statedb_entry",
+                   return_value=mechanism) as read_statedb_entry:
+            config_wrapper.validate_field_operation(old_config, target_config)
+        read_statedb_entry.assert_called_once_with("asic0", "PFC_WD_STATE_TABLE", "PFC_WD", "RECOVERY_MECHANISM")
+
+    @pytest.mark.parametrize("old_config, target_config", [
+        # existing GLOBAL row kept unchanged
+        ({"PFC_WD": {"GLOBAL": {"POLL_INTERVAL": "200"}, "Ethernet0": {"action": "drop"}}},
+         {"PFC_WD": {"GLOBAL": {"POLL_INTERVAL": "200"}, "Ethernet0": {"action": "forward"}}}),
+        # field removed from an existing GLOBAL row
+        ({"PFC_WD": {"GLOBAL": {"POLL_INTERVAL": "200", "BIG_RED_SWITCH": "enable"}}},
+         {"PFC_WD": {"GLOBAL": {"POLL_INTERVAL": "200"}}}),
+        # no PFC_WD change
+        ({"PORT": {"Ethernet0": {"mtu": "9100"}}},
+         {"PORT": {"Ethernet0": {"mtu": "9000"}}}),
+    ])
+    @patch("os.path.exists", mock.Mock(return_value=True))
+    @patch("builtins.open", mock_open(read_data='{"tables": {}}'))
+    def test_validate_field_operation_hw_pfcwd_global_untouched(self, old_config, target_config):
+        config_wrapper = gu_common.ConfigWrapper()
+        with patch("generic_config_updater.field_operation_validators.read_statedb_entry",
+                   return_value="HARDWARE") as read_statedb_entry:
+            config_wrapper.validate_field_operation(old_config, target_config)
+        read_statedb_entry.assert_not_called()
+
+    @pytest.mark.parametrize("old_meta, target_meta, message", [
+        ({"hwsku": "SKU-A", "hostname": "sw1"}, {"hwsku": "SKU-B", "hostname": "sw1"},
+         "hwsku cannot be changed from SKU-A to SKU-B"),
+        ({"hwsku": "SKU-A"}, {}, "hwsku cannot be changed from SKU-A to None"),
+        ({"hwsku": "SKU-A"}, {"hwsku": "SKU-A", "switch_type": "voq"},
+         "switch_type cannot be changed from switch to voq"),
+        ({"hwsku": "SKU-A", "switch_type": "voq"}, {"hwsku": "SKU-A", "switch_type": "fabric"},
+         "switch_type cannot be changed from voq to fabric"),
+        ({"hwsku": "SKU-A", "asic_id": "06:00.0"}, {"hwsku": "SKU-A", "asic_id": "07:00.0"},
+         "asic_id cannot be changed from 06:00.0 to 07:00.0"),
+    ])
+    @pytest.mark.parametrize("scope", ["", "asic0"])
+    @patch("os.path.exists", mock.Mock(return_value=True))
+    @patch("builtins.open", mock_open(read_data='{"tables": {}}'))
+    def test_validate_field_operation_device_metadata_refused(self, old_meta, target_meta, message, scope):
+        config_wrapper = gu_common.ConfigWrapper(scope=scope)
+        old_config = {"DEVICE_METADATA": {"localhost": old_meta}}
+        target_config = {"DEVICE_METADATA": {"localhost": target_meta}}
+        with pytest.raises(gu_common.IllegalPatchOperationError) as err:
+            config_wrapper.validate_field_operation(old_config, target_config)
+        assert message in str(err.value)
+        assert "needs a config reload" in str(err.value)
+
+    @pytest.mark.parametrize("old_meta, target_meta, legal", [
+        ({"hwsku": "SKU-A"}, {"hwsku": "SKU-A", "multidb_enabled": "true"}, False),
+        ({"hwsku": "SKU-A", "multidb_enabled": "true"}, {"hwsku": "SKU-A", "multidb_enabled": "false"}, False),
+        ({"hwsku": "SKU-A"}, {"hwsku": "SKU-A", "multidb_enabled": "false"}, True),
+    ])
+    @patch("os.path.exists", mock.Mock(return_value=True))
+    @patch("builtins.open", mock_open(read_data='{"tables": {}}'))
+    def test_validate_field_operation_multidb_enabled(self, old_meta, target_meta, legal):
+        config_wrapper = gu_common.ConfigWrapper()
+        old_config = {"DEVICE_METADATA": {"localhost": old_meta}}
+        target_config = {"DEVICE_METADATA": {"localhost": target_meta}}
+        if legal:
+            config_wrapper.validate_field_operation(old_config, target_config)
+        else:
+            with pytest.raises(gu_common.IllegalPatchOperationError, match="config save and reboot"):
+                config_wrapper.validate_field_operation(old_config, target_config)
+
+    @pytest.mark.parametrize("old_meta, target_meta", [
+        ({"hwsku": "SKU-A", "hostname": "sw1"}, {"hwsku": "SKU-A", "hostname": "sw2"}),
+        ({"hwsku": "SKU-A"}, {"hwsku": "SKU-A", "switch_type": "switch"}),
+        ({"hwsku": "SKU-A", "switch_type": "switch"}, {"hwsku": "SKU-A", "switch_type": ""}),
+        ({"hwsku": "SKU-A", "switch_type": "voq"}, {"hwsku": "SKU-A", "switch_type": "voq", "bgp_asn": "65100"}),
+        ({"hwsku": "SKU-A", "asic_id": "06:00.0"}, {"hwsku": "SKU-A"}),
+        ({"hwsku": "SKU-A"}, {"hwsku": "SKU-A", "asic_id": "06:00.0"}),
+        ({"hwsku": "SKU-A", "type": "ToRRouter"}, {"hwsku": "SKU-A", "type": "LeafRouter"}),
+        ({"hwsku": "SKU-A"}, {"hwsku": "SKU-A", "subtype": "DualToR"}),
+        ({"hwsku": "SKU-A", "sub_role": "FrontEnd"}, {"hwsku": "SKU-A", "sub_role": "BackEnd"}),
+    ])
+    @patch("os.path.exists", mock.Mock(return_value=True))
+    @patch("builtins.open", mock_open(read_data='{"tables": {}}'))
+    def test_validate_field_operation_device_metadata_allowed(self, old_meta, target_meta):
+        config_wrapper = gu_common.ConfigWrapper()
+        config_wrapper.validate_field_operation({"DEVICE_METADATA": {"localhost": old_meta}},
+                                                {"DEVICE_METADATA": {"localhost": target_meta}})
+
+    @pytest.mark.parametrize("scope, legal", [("", True), ("localhost", True), ("asic0", False)])
+    @patch("os.path.exists", mock.Mock(return_value=True))
+    @patch("builtins.open", mock_open(read_data='{"tables": {}}'))
+    def test_validate_field_operation_sub_role_refused_in_asic_scope(self, scope, legal):
+        config_wrapper = gu_common.ConfigWrapper(scope=scope)
+        old_config = {"DEVICE_METADATA": {"localhost": {"hwsku": "SKU-A", "sub_role": "FrontEnd"}}}
+        target_config = {"DEVICE_METADATA": {"localhost": {"hwsku": "SKU-A", "sub_role": "BackEnd"}}}
+        if legal:
+            config_wrapper.validate_field_operation(old_config, target_config)
+        else:
+            with pytest.raises(gu_common.IllegalPatchOperationError,
+                               match="sub_role cannot be changed from FrontEnd to BackEnd"):
+                config_wrapper.validate_field_operation(old_config, target_config)
+
+>>>>>>> c2e8d2c2 (NOS-22993: [gcu] Restart services that read config only at startup, once per patch (#1382))
     @patch("sonic_py_common.device_info.get_sonic_version_info",
            mock.Mock(return_value={"build_version": "20241211.49"}))
     @patch("generic_config_updater.field_operation_validators.get_asic_name",

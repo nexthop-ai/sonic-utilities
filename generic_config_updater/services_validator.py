@@ -4,6 +4,10 @@ import re
 import shlex
 import subprocess
 import time
+<<<<<<< HEAD
+=======
+from sonic_py_common import device_info
+>>>>>>> c2e8d2c2 (NOS-22993: [gcu] Restart services that read config only at startup, once per patch (#1382))
 from .gu_common import genericUpdaterLogging
 
 IFNAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,15}")
@@ -91,6 +95,7 @@ def _service_restart(svc_name):
     return rc == 0
 
 
+<<<<<<< HEAD
 def rsyslog_validator(old_config, upd_config, keys):
     old_syslog = old_config.get("SYSLOG_SERVER", {})
     upd_syslog = upd_config.get("SYSLOG_SERVER", {})
@@ -137,6 +142,8 @@ def vlan_validator(old_config, upd_config, keys):
     # No update to DHCP servers.
     return True
 
+=======
+>>>>>>> c2e8d2c2 (NOS-22993: [gcu] Restart services that read config only at startup, once per patch (#1382))
 def caclmgrd_validator(old_config, upd_config, keys):
     old_acltable = old_config.get("ACL_TABLE", {})
     upd_acltable = upd_config.get("ACL_TABLE", {})
@@ -165,6 +172,7 @@ def caclmgrd_validator(old_config, upd_config, keys):
     return True
 
 
+<<<<<<< HEAD
 def ntp_validator(old_config, upd_config, keys):
     return _service_restart("chrony")
 
@@ -190,6 +198,39 @@ def telemetry_validator(old_config, upd_config, keys):
 
     if old_vrf != upd_vrf:
         return _service_restart("telemetry")
+=======
+def _hwsku_renders_sbfd_spray():
+    # Only hwskus whose sai.profile.j2 renders SBFD_SPRAY into the SAI profile
+    # consume the knob; anywhere else a restart would hit the data plane for
+    # nothing.
+    try:
+        _, hwsku_path = device_info.get_paths_to_platform_and_hwsku_dirs()
+        with open(os.path.join(hwsku_path, "sai.profile.j2")) as f:
+            return "SBFD_SPRAY" in f.read()
+    except FileNotFoundError:
+        return False
+    except Exception as e:
+        logger.log(logger.LOG_PRIORITY_ERROR,
+                   f"SBFD_SPRAY: cannot read the hwsku sai.profile.j2: {e}",
+                   print_to_console)
+        return False
+
+
+def sbfd_spray_match(old_config, upd_config, keys):
+    # syncd reads SBFD_SPRAY|GLOBAL state only at start (rendered into
+    # sai.profile), so swss (and with it syncd) restarts when the effective
+    # state changes. A missing table or field means enabled.
+    def _state(config):
+        return config.get("SBFD_SPRAY", {}).get("GLOBAL", {}).get("state", "enabled")
+
+    if _state(old_config) == _state(upd_config):
+        return False
+    if not _hwsku_renders_sbfd_spray():
+        logger.log(logger.LOG_PRIORITY_NOTICE,
+                   "SBFD_SPRAY: state changed, but this hwsku does not use it; no restart",
+                   print_to_console)
+        return False
+>>>>>>> c2e8d2c2 (NOS-22993: [gcu] Restart services that read config only at startup, once per patch (#1382))
     return True
 
 

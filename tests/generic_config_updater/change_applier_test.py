@@ -1,12 +1,14 @@
 import copy
 import json
 import jsondiff
+import jsonpatch
 import os
 import unittest
 from collections import defaultdict
 from unittest.mock import patch, Mock, call
 
 import generic_config_updater.change_applier
+import generic_config_updater.generic_updater as gu
 import generic_config_updater.services_validator
 import generic_config_updater.gu_common
 
@@ -298,3 +300,498 @@ class TestDryRunChangeApplier(unittest.TestCase):
 
         # Assert
         applier.config_wrapper.apply_change_to_config_db.assert_called()
+<<<<<<< HEAD
+=======
+
+
+class TestDryRunChangeApplierRestartServices(unittest.TestCase):
+    @patch("generic_config_updater.services_validator._service_restart")
+    def test_restart_services__restarts_nothing(self, mock_restart):
+        applier = generic_config_updater.change_applier.DryRunChangeApplier(Mock())
+        assert applier.restart_services()
+        mock_restart.assert_not_called()
+
+
+class TestChangeApplierRestartServices(unittest.TestCase):
+    CONF = {
+        "tables": {
+            "SNMP": {"restart_on_change": [{"units": ["snmp"], "host_only": True}]},
+            "SNMP_COMMUNITY": {"restart_on_change": [{"units": ["snmp"], "host_only": True}]},
+            "PORT": {"restart_on_change": [{"fields": ["speed"], "modified_only": True, "units": ["telemetry"]}]},
+            "SYSLOG_SERVER": {"restart_on_change": [{"units": ["rsyslog-config"], "reset_failed": ["rsyslog"]}]},
+            "DEVICE_METADATA": {
+                "restart_on_change": [
+                    {"fields": ["docker_routing_config_mode"], "units": ["bgp"]},
+                    {"fields": ["type"], "units": ["radv", "swss", "copp-config", "bgp"]},
+                    {"fields": ["synchronous_mode"], "defaults": {"synchronous_mode": "enable"},
+                     "units": ["swss"], "reset_failed": ["syncd"], "per_asic": True},
+                ],
+            },
+            "VLAN": {"services_to_validate": ["vlan-service"]},
+            "SBFD_SPRAY": {"restart_on_change": [{"match": "generic_config_updater.services_validator.match_stub",
+                                                  "units": ["swss"], "reset_failed": ["syncd"]}]},
+        }
+    }
+    OLD = {
+        "SNMP": {"LOCATION": {"Location": "lab"}},
+        "SNMP_COMMUNITY": {"public": {"TYPE": "RO"}},
+        "DEVICE_METADATA": {"localhost": {"hostname": "sw1"}},
+        "VLAN": {"Vlan100": {"vlanid": "100"}},
+    }
+
+    def setUp(self):
+        mod = "generic_config_updater."
+        for target, attr, kwargs in [
+            (mod + "change_applier.get_config_db", "get_db", {}),
+            (mod + "services_validator._service_restart", "restart", {"return_value": True}),
+            (mod + "services_validator.command_wrapper", "command", {"return_value": 0}),
+        ]:
+            p = patch(target, **kwargs)
+            setattr(self, attr, p.start())
+            self.addCleanup(p.stop)
+        p = patch.object(generic_config_updater.change_applier.ChangeApplier, "updater_conf", self.CONF)
+        p.start()
+        self.addCleanup(p.stop)
+        self.applier = generic_config_updater.change_applier.ChangeApplier()
+
+    def updated(self, **tables):
+        upd = copy.deepcopy(self.OLD)
+        for tbl, data in tables.items():
+            if data is None:
+                upd.pop(tbl, None)
+            else:
+                upd[tbl] = data
+        return upd
+
+    def restart_after(self, *changes, applier=None):
+        applier = applier or self.applier
+        for old, upd in changes:
+            applier._collect_restarts(old, upd)
+        return applier.restart_services()
+
+    def test_unchanged__no_restart(self):
+        assert self.restart_after((self.OLD, copy.deepcopy(self.OLD)))
+        self.restart.assert_not_called()
+        self.command.assert_not_called()
+
+    def test_unrelated_table__no_restart(self):
+        assert self.restart_after((self.OLD, self.updated(VLAN={})))
+        self.restart.assert_not_called()
+
+    def test_tables_sharing_a_unit__one_restart(self):
+        upd = self.updated(SNMP={"LOCATION": {"Location": "dc"}}, SNMP_COMMUNITY={"private": {"TYPE": "RW"}})
+        assert self.restart_after((self.OLD, upd))
+        self.restart.assert_called_once_with("snmp")
+        self.command.assert_called_once_with(["systemctl", "reset-failed", "snmp"])
+
+    def test_table_added_or_removed__restart(self):
+        added = self.updated(SNMP={"LOCATION": {"Location": "lab"}, "CONTACT": {"Contact": "noc"}})
+        for upd in (self.updated(SNMP=None), added):
+            self.restart.reset_mock()
+            assert self.restart_after((self.OLD, upd))
+            self.restart.assert_called_once_with("snmp")
+        self.restart.reset_mock()
+        old = self.updated(SNMP_COMMUNITY=None)
+        assert self.restart_after((old, self.OLD))
+        self.restart.assert_called_once_with("snmp")
+
+    def test_field_rule__other_field__no_restart(self):
+        upd = self.updated(DEVICE_METADATA={"localhost": {"hostname": "sw2"}})
+        assert self.restart_after((self.OLD, upd))
+        self.restart.assert_not_called()
+
+    def test_field_rule__listed_field__restart(self):
+        for meta in ({"hostname": "sw1", "docker_routing_config_mode": "split"},
+                     {"hostname": "sw1"},
+                     {}):
+            old = self.updated(DEVICE_METADATA={"localhost": {"hostname": "sw1",
+                                                              "docker_routing_config_mode": "unified"}})
+            upd = self.updated(DEVICE_METADATA={"localhost": meta} if meta else None)
+            self.restart.reset_mock()
+            assert self.restart_after((old, upd))
+            self.restart.assert_called_once_with("bgp")
+
+    def test_each_unit_restarted_once_in_order(self):
+        upd = self.updated(SNMP={}, DEVICE_METADATA={"localhost": {"docker_routing_config_mode": "split"}})
+        assert self.restart_after((self.OLD, upd))
+        assert self.restart.call_args_list == [call("bgp"), call("snmp")]
+
+    def test_disabled_feature__no_restart(self):
+        for state in ("disabled", "always_disabled"):
+            upd = self.updated(SNMP={}, FEATURE={"snmp": {"state": state}})
+            assert self.restart_after((self.OLD, upd))
+        self.restart.assert_not_called()
+        self.command.assert_not_called()
+        upd = self.updated(SNMP={}, FEATURE={"snmp": {"state": "enabled"}})
+        assert self.restart_after((self.OLD, upd))
+        self.restart.assert_called_once_with("snmp")
+
+    def test_restart_failure__returns_false_and_restarts_the_rest(self):
+        self.restart.side_effect = lambda unit: unit != "bgp"
+        upd = self.updated(SNMP={}, DEVICE_METADATA={"localhost": {"docker_routing_config_mode": "split"}})
+        assert not self.restart_after((self.OLD, upd))
+        assert self.restart.call_args_list == [call("bgp"), call("snmp")]
+
+    def test_namespace_scope__skips_host_only_rules(self):
+        applier = generic_config_updater.change_applier.ChangeApplier(scope="asic0")
+        assert self.restart_after((self.OLD, self.updated(SNMP={})), applier=applier)
+        self.restart.assert_not_called()
+        upd = self.updated(SNMP={}, DEVICE_METADATA={"localhost": {"docker_routing_config_mode": "split"}})
+        assert self.restart_after((self.OLD, upd), applier=applier)
+        self.restart.assert_called_once_with("bgp")
+
+    def test_key_deleted_and_readded__restart(self):
+        removed = self.updated(SNMP_COMMUNITY=None)
+        assert self.restart_after((self.OLD, removed), (removed, copy.deepcopy(self.OLD)))
+        self.restart.assert_called_once_with("snmp")
+
+    def test_pending_restarts_cleared__not_repeated(self):
+        assert self.restart_after((self.OLD, self.updated(SNMP={})))
+        assert self.restart_after()
+        self.restart.assert_called_once_with("snmp")
+
+    def test_empty_field_value__counts_as_unset(self):
+        for value in ("", []):
+            upd = self.updated(DEVICE_METADATA={"localhost": {"hostname": "sw1",
+                                                              "docker_routing_config_mode": value}})
+            assert self.restart_after((self.OLD, upd))
+        self.restart.assert_not_called()
+
+    def test_modified_only__ignores_field_set_or_cleared(self):
+        old = self.updated(PORT={"Ethernet0": {"speed": "100000"}, "Ethernet4": {"mtu": "9100"}})
+        for port in ({"Ethernet0": {"speed": "100000"}, "Ethernet4": {"mtu": "9100", "speed": "100000"}},
+                     {"Ethernet0": {}, "Ethernet4": {"mtu": "9100"}},
+                     {"Ethernet4": {"mtu": "9100"}}):
+            assert self.restart_after((old, self.updated(PORT=port)))
+        self.restart.assert_not_called()
+        upd = self.updated(PORT={"Ethernet0": {"speed": "400000"}, "Ethernet4": {"mtu": "9100"}})
+        assert self.restart_after((old, upd))
+        self.restart.assert_called_once_with("telemetry")
+
+    def test_defaults__unset_field_takes_default(self):
+        for old_meta, upd_meta in (({}, {"synchronous_mode": "enable"}),
+                                   ({"synchronous_mode": "enable"}, {}),
+                                   ({"synchronous_mode": ""}, {"synchronous_mode": "enable"})):
+            old = self.updated(DEVICE_METADATA={"localhost": old_meta})
+            assert self.restart_after((old, self.updated(DEVICE_METADATA={"localhost": upd_meta})))
+        assert self.restart_after((self.OLD, self.updated(DEVICE_METADATA=None)))
+        self.restart.assert_not_called()
+        for old_meta, upd_meta in (({}, {"synchronous_mode": "disable"}),
+                                   ({"synchronous_mode": "disable"}, {})):
+            self.restart.reset_mock()
+            old = self.updated(DEVICE_METADATA={"localhost": old_meta})
+            assert self.restart_after((old, self.updated(DEVICE_METADATA={"localhost": upd_meta})))
+            self.restart.assert_called_once_with("swss")
+
+    def test_per_asic__asic_scope_restarts_the_asic_instance(self):
+        applier = generic_config_updater.change_applier.ChangeApplier(scope="asic1")
+        upd = self.updated(DEVICE_METADATA={"localhost": {"hostname": "sw1", "synchronous_mode": "disable"}})
+        assert self.restart_after((self.OLD, upd), applier=applier)
+        self.command.assert_called_once_with(["systemctl", "reset-failed", "swss@1", "syncd@1"])
+        self.restart.assert_called_once_with("swss@1")
+
+    def test_swss_restarts_first(self):
+        upd = self.updated(SNMP={}, DEVICE_METADATA={"localhost": {"docker_routing_config_mode": "split",
+                                                                   "synchronous_mode": "disable"}})
+        with patch("generic_config_updater.change_applier.multi_asic.is_multi_asic", return_value=False):
+            assert self.restart_after((self.OLD, upd))
+        assert self.restart.call_args_list == [call("swss"), call("bgp"), call("snmp")]
+
+    def test_copp_config_restarts_before_swss(self):
+        upd = self.updated(DEVICE_METADATA={"localhost": {"type": "MgmtToRRouter"}})
+        with patch("generic_config_updater.change_applier.multi_asic.is_multi_asic", return_value=False):
+            assert self.restart_after((self.OLD, upd))
+        assert self.restart.call_args_list == [call("copp-config"), call("swss"), call("bgp"), call("radv")]
+
+    def test_per_asic__disabled_feature__no_restart(self):
+        applier = generic_config_updater.change_applier.ChangeApplier(scope="asic1")
+        upd = self.updated(DEVICE_METADATA={"localhost": {"synchronous_mode": "disable"}},
+                           FEATURE={"swss": {"state": "disabled"}})
+        assert self.restart_after((self.OLD, upd), applier=applier)
+        self.restart.assert_not_called()
+
+    def test_per_asic__host_scope(self):
+        upd = self.updated(DEVICE_METADATA={"localhost": {"hostname": "sw1", "synchronous_mode": "disable"}})
+        with patch("generic_config_updater.change_applier.multi_asic.is_multi_asic", return_value=True):
+            assert self.restart_after((self.OLD, upd))
+        self.restart.assert_not_called()
+        with patch("generic_config_updater.change_applier.multi_asic.is_multi_asic", return_value=False):
+            assert self.restart_after((self.OLD, upd))
+        self.command.assert_called_once_with(["systemctl", "reset-failed", "swss", "syncd"])
+        self.restart.assert_called_once_with("swss")
+
+    def match_stub(self, **kwargs):
+        stub = Mock(**kwargs)
+        p = patch("generic_config_updater.services_validator.match_stub", stub, create=True)
+        p.start()
+        self.addCleanup(p.stop)
+        return stub
+
+    def test_match__consulted_only_when_its_table_changes(self):
+        stub = self.match_stub(return_value=True)
+        assert self.restart_after((self.OLD, self.updated(SNMP={})))
+        stub.assert_not_called()
+        upd = self.updated(SBFD_SPRAY={"GLOBAL": {"state": "disabled"}})
+        assert self.restart_after((self.OLD, upd))
+        stub.assert_called_once_with(self.OLD, upd, {})
+        assert self.restart.call_args_list == [call("snmp"), call("swss")]
+        self.command.assert_called_with(["systemctl", "reset-failed", "swss", "syncd"])
+
+    def test_match__false_no_restart(self):
+        self.match_stub(return_value=False)
+        assert self.restart_after((self.OLD, self.updated(SBFD_SPRAY={"GLOBAL": {"state": "disabled"}})))
+        self.restart.assert_not_called()
+
+    def test_match__restarts_only_the_rule_units(self):
+        self.match_stub(return_value=["snmp", "bgp"])
+        assert self.restart_after((self.OLD, self.updated(SBFD_SPRAY={"GLOBAL": {"state": "disabled"}})))
+        self.restart.assert_called_once_with("swss")
+
+    def test_match__gets_the_change_keys(self):
+        stub = self.match_stub(return_value=False)
+        keys = {"SBFD_SPRAY": {"GLOBAL": {}}}
+        upd = self.updated(SBFD_SPRAY={"GLOBAL": {"state": "disabled"}})
+        self.applier._collect_restarts(self.OLD, upd, keys)
+        stub.assert_called_once_with(self.OLD, upd, keys)
+
+    def test_match__raising_fails_the_change_but_restarts_what_was_applied(self):
+        self.match_stub(side_effect=RuntimeError("boom"))
+        self.applier._collect_restarts(self.OLD, self.updated(SNMP={}))
+        with self.assertRaisesRegex(RuntimeError, "boom"):
+            self.applier._collect_restarts(self.OLD, self.updated(SBFD_SPRAY={"GLOBAL": {"state": "disabled"}}))
+        assert self.applier.restart_services()
+        self.restart.assert_called_once_with("snmp")
+
+    def test_match__outside_services_validator_refused(self):
+        conf = copy.deepcopy(self.CONF)
+        conf["tables"]["SBFD_SPRAY"]["restart_on_change"][0]["match"] = "os.system"
+        with patch.object(generic_config_updater.change_applier.ChangeApplier, "updater_conf", conf):
+            with self.assertRaises(generic_config_updater.gu_common.GenericConfigUpdaterError):
+                self.restart_after((self.OLD, self.updated(SBFD_SPRAY={"GLOBAL": {"state": "disabled"}})))
+        self.restart.assert_not_called()
+
+    def test_reset_failed__clears_extra_units_first(self):
+        upd = self.updated(SYSLOG_SERVER={"10.0.0.1": {}})
+        assert self.restart_after((self.OLD, upd))
+        self.command.assert_called_once_with(["systemctl", "reset-failed", "rsyslog-config", "rsyslog"])
+        self.restart.assert_called_once_with("rsyslog-config")
+
+    def test_patch_with_several_snmp_changes__one_restart(self):
+        target = self.updated(SNMP={"LOCATION": {"Location": "dc"}, "CONTACT": {"Contact": "noc"}},
+                              SNMP_COMMUNITY={"private": {"TYPE": "RW"}})
+        patch_ops = jsonpatch.JsonPatch([
+            {"op": "replace", "path": "/SNMP/LOCATION/Location", "value": "dc"},
+            {"op": "add", "path": "/SNMP/CONTACT", "value": {"Contact": "noc"}},
+            {"op": "add", "path": "/SNMP_COMMUNITY/private", "value": {"TYPE": "RW"}},
+            {"op": "remove", "path": "/SNMP_COMMUNITY/public"},
+        ])
+        config_wrapper = Mock()
+        config_wrapper.get_config_db_as_json.side_effect = [copy.deepcopy(self.OLD), target]
+        config_wrapper.remove_null_values.return_value = []
+        config_wrapper.get_empty_tables.return_value = []
+        patch_wrapper = Mock()
+        patch_wrapper.simulate_config_db_patch.return_value = target
+        patch_wrapper.diff_json.return_value = []
+        patchsorter = Mock()
+        patchsorter.sort.return_value = [generic_config_updater.gu_common.JsonChange(jsonpatch.JsonPatch([op]))
+                                         for op in patch_ops]
+        with patch("generic_config_updater.change_applier.set_config"), \
+                patch("generic_config_updater.change_applier.time.sleep"), \
+                patch.object(self.applier, "_services_validate", return_value=0):
+            gu.PatchApplier(patchsorter, self.applier, config_wrapper, patch_wrapper).apply(patch_ops)
+        self.restart.assert_called_once_with("snmp")
+
+    def apply_then_fail(self, applied_ops):
+        target = self.updated(SNMP={"LOCATION": {"Location": "dc"}}, VLAN={"Vlan100": {"vlanid": "100", "mtu": "9100"}})
+        config_wrapper = Mock()
+        config_wrapper.get_config_db_as_json.return_value = copy.deepcopy(self.OLD)
+        config_wrapper.remove_null_values.return_value = []
+        config_wrapper.get_empty_tables.return_value = []
+        patch_wrapper = Mock()
+        patch_wrapper.simulate_config_db_patch.return_value = target
+        applied_change = generic_config_updater.gu_common.JsonChange(jsonpatch.JsonPatch(applied_ops))
+        failing_change = Mock()
+        failing_change.apply.side_effect = generic_config_updater.gu_common.GenericConfigUpdaterError("boom")
+        patchsorter = Mock()
+        patchsorter.sort.return_value = [applied_change, failing_change]
+        with patch("generic_config_updater.change_applier.set_config"), \
+                patch("generic_config_updater.change_applier.time.sleep"), \
+                patch.object(self.applier, "_services_validate", return_value=0):
+            with self.assertRaisesRegex(generic_config_updater.gu_common.GenericConfigUpdaterError, "boom"):
+                gu.PatchApplier(patchsorter, self.applier, config_wrapper, patch_wrapper).apply(Mock())
+
+    def test_failed_change__restarts_for_changes_already_applied(self):
+        self.apply_then_fail([{"op": "replace", "path": "/SNMP/LOCATION/Location", "value": "dc"}])
+        self.restart.assert_called_once_with("snmp")
+
+    def test_failed_change__no_restart_for_changes_not_applied(self):
+        self.apply_then_fail([{"op": "add", "path": "/VLAN/Vlan100/mtu", "value": "9100"}])
+        self.restart.assert_not_called()
+
+
+class TestShippedRestartConf(unittest.TestCase):
+    def load_conf(self):
+        conf_file = os.path.join(os.path.dirname(generic_config_updater.change_applier.__file__),
+                                 "gcu_services_validator.conf.json")
+        with open(conf_file) as f:
+            return json.load(f)
+
+    def test_restart_rules_are_well_formed(self):
+        # Other tools read these rules, so keep them to the documented shape.
+        for tbl, tbl_conf in self.load_conf()["tables"].items():
+            rules = tbl_conf.get("restart_on_change", [])
+            assert isinstance(rules, list), tbl
+            for rule in rules:
+                assert isinstance(rule, dict) and "units" in rule, tbl
+                assert set(rule) <= {"units", "fields", "reset_failed", "modified_only", "host_only",
+                                     "per_asic", "defaults", "match"}, tbl
+                if "match" in rule:
+                    assert not set(rule) & {"fields", "defaults", "modified_only"}, tbl
+                    module_name, _, method_name = rule["match"].rpartition(".")
+                    assert module_name == "generic_config_updater.services_validator", tbl
+                    assert callable(getattr(generic_config_updater.services_validator, method_name)), tbl
+                for key in ("units", "fields", "reset_failed"):
+                    values = rule.get(key, ["x"])
+                    assert isinstance(values, list) and values, tbl
+                    assert all(isinstance(v, str) and v for v in values), tbl
+                for key in ("modified_only", "host_only", "per_asic"):
+                    assert rule.get(key, True) is True, tbl
+                assert not (rule.get("host_only") and rule.get("per_asic")), tbl
+                defaults = rule.get("defaults", {"x": "x"})
+                assert isinstance(defaults, dict) and defaults, tbl
+                assert all(isinstance(v, str) and v for v in defaults.values()), tbl
+                if "defaults" in rule:
+                    assert set(defaults) <= set(rule.get("fields", [])), tbl
+
+    # snmpd.conf is rendered from these tables only when the snmp container starts.
+    SNMP_TABLES = ["SNMP", "SNMP_COMMUNITY", "SNMP_USER", "SNMP_AGENT_ADDRESS_CONFIG", "SNMP_TRAP_CONFIG"]
+
+    @patch("generic_config_updater.services_validator.command_wrapper", return_value=0)
+    @patch("generic_config_updater.services_validator._service_restart", return_value=True)
+    @patch("generic_config_updater.change_applier.get_config_db")
+    def test_each_snmp_table_restarts_snmp(self, mock_db, mock_restart, mock_command):
+        conf = self.load_conf()
+        with patch.object(generic_config_updater.change_applier.ChangeApplier, "updater_conf", conf):
+            applier = generic_config_updater.change_applier.ChangeApplier()
+            for tbl in self.SNMP_TABLES:
+                mock_restart.reset_mock()
+                applier._collect_restarts({}, {tbl: {"key": {"field": "value"}}})
+                assert applier.restart_services()
+                mock_restart.assert_called_once_with("snmp")
+
+
+class TestChangeApplierPortRemoveWait(unittest.TestCase):
+    RUN_DATA = {
+        "PORT": {"Ethernet0": {"lanes": "0,1,2,3"}, "Ethernet8": {"lanes": "8,9,10,11"}},
+        "INTERFACE": {"Ethernet8": {}},
+    }
+    NEW_PORT = {"lanes": "0,1"}
+
+    def setUp(self):
+        self.writes = []
+        self.db = Mock()
+        self.db.get.return_value = "oid:0x10"
+        self.db.exists.return_value = False
+        mod = "generic_config_updater.change_applier."
+        for target, kwargs in [
+            ("get_config_db", {}),
+            ("set_config", {"side_effect": lambda db, tbl, key, data: self.writes.append((tbl, key, data))}),
+            ("time.sleep", {}),
+            ("ChangeApplier._services_validate", {"return_value": 0}),
+        ]:
+            p = patch(mod + target, **kwargs)
+            p.start()
+            self.addCleanup(p.stop)
+        p = patch(mod + "get_sonic_db", return_value=self.db)
+        self.get_db = p.start()
+        self.addCleanup(p.stop)
+        self.applier = generic_config_updater.change_applier.ChangeApplier()
+
+    def apply(self, run_data, upd_data):
+        change = Mock()
+        change.apply.return_value = copy.deepcopy(upd_data)
+        return self.applier.apply(copy.deepcopy(run_data), change)
+
+    def remove(self, *ports):
+        upd = copy.deepcopy(self.RUN_DATA)
+        for port in ports:
+            del upd["PORT"][port]
+        return self.apply(self.RUN_DATA, upd)
+
+    def add(self, run_data, port="Ethernet0"):
+        upd = copy.deepcopy(run_data)
+        upd.setdefault("PORT", {})[port] = self.NEW_PORT
+        return self.apply(run_data, upd)
+
+    def test_no_port_removed__no_db_access(self):
+        upd = copy.deepcopy(self.RUN_DATA)
+        upd["INTERFACE"] = {}
+        self.apply(self.RUN_DATA, upd)
+        self.get_db.assert_not_called()
+        assert self.writes == [("INTERFACE", "Ethernet8", None)]
+
+    def test_port_modified__no_db_access(self):
+        upd = copy.deepcopy(self.RUN_DATA)
+        upd["PORT"]["Ethernet0"]["speed"] = "400000"
+        self.apply(self.RUN_DATA, upd)
+        self.get_db.assert_not_called()
+
+    def test_port_removed_only__oid_read_but_no_wait(self):
+        self.db.exists.return_value = True
+        self.remove("Ethernet0")
+        assert self.writes == [("PORT", "Ethernet0", None)]
+        self.db.get.assert_called_once_with(self.db.COUNTERS_DB, "COUNTERS_PORT_NAME_MAP", "Ethernet0")
+        self.db.exists.assert_not_called()
+
+    def test_port_added_after_removal__waits_until_gone_before_writing(self):
+        self.db.exists.side_effect = lambda *args: self.writes.append("exists") or len(self.writes) < 3
+        run = self.remove("Ethernet0")
+        self.add(run)
+        assert self.writes == [("PORT", "Ethernet0", None), "exists", "exists",
+                               ("PORT", "Ethernet0", self.NEW_PORT)]
+        self.db.exists.assert_called_with(self.db.ASIC_DB, "ASIC_STATE:SAI_OBJECT_TYPE_PORT:oid:0x10")
+
+    def test_port_added_after_removal__raises_on_timeout(self):
+        self.db.exists.return_value = True
+        run = self.remove("Ethernet0")
+        with patch("generic_config_updater.change_applier.time.monotonic", side_effect=[0, 61]):
+            with self.assertRaisesRegex(generic_config_updater.gu_common.GenericConfigUpdaterError,
+                                        r"\['Ethernet0'\] still in ASIC_DB"):
+                self.add(run)
+        assert self.writes == [("PORT", "Ethernet0", None)]
+
+    def test_timeout_lists_only_remaining_ports(self):
+        self.db.get.side_effect = lambda db_name, table, port: {"Ethernet0": "oid:0x10", "Ethernet8": "oid:0x18"}[port]
+        self.db.exists.side_effect = lambda db_name, key: key.endswith("oid:0x18")
+        run = self.remove("Ethernet0", "Ethernet8")
+        with patch("generic_config_updater.change_applier.time.monotonic", side_effect=[0, 61]):
+            with self.assertRaisesRegex(generic_config_updater.gu_common.GenericConfigUpdaterError,
+                                        r"\['Ethernet8'\] still in ASIC_DB"):
+                self.add(run)
+
+    def test_port_without_oid__not_waited_for(self):
+        self.db.get.return_value = None
+        run = self.remove("Ethernet0")
+        self.add(run)
+        self.db.exists.assert_not_called()
+
+    def test_waited_ports_not_rechecked_on_later_add(self):
+        run = self.remove("Ethernet0")
+        run = self.add(run)
+        self.add(run, port="Ethernet4")
+        assert self.db.exists.call_count == 1
+
+    def test_one_db_connection_for_applier_scope(self):
+        self.applier = generic_config_updater.change_applier.ChangeApplier(scope="asic0")
+        run = self.remove("Ethernet0")
+        self.add(run)
+        self.get_db.assert_called_once_with("asic0")
+
+
+class TestGetSonicDb(unittest.TestCase):
+    @patch("generic_config_updater.change_applier.SonicV2Connector")
+    def test_connects_counters_and_asic_db_in_namespace(self, connector):
+        db = generic_config_updater.change_applier.get_sonic_db("asic1")
+        connector.assert_called_once_with(use_unix_socket_path=True, namespace="asic1")
+        assert db.connect.call_args_list == [call(db.COUNTERS_DB), call(db.ASIC_DB)]
+>>>>>>> c2e8d2c2 (NOS-22993: [gcu] Restart services that read config only at startup, once per patch (#1382))

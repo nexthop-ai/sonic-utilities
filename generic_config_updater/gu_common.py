@@ -203,6 +203,11 @@ class ConfigWrapper:
                     raise IllegalPatchOperationError("Given patch operation is invalid. Operation: {} is illegal on field: {}".format(operation, field))
 
         self.illegal_dataacl_check(old_config, target_config)
+<<<<<<< HEAD
+=======
+        self.illegal_hw_pfcwd_global_check(old_config, target_config)
+        self.illegal_device_metadata_check(old_config, target_config)
+>>>>>>> c2e8d2c2 (NOS-22993: [gcu] Restart services that read config only at startup, once per patch (#1382))
 
         def _invoke_validating_function(cmd, jsonpatch_element):
             # cmd is in the format as <package/module name>.<method name>
@@ -278,6 +283,55 @@ class ConfigWrapper:
                             key, modified_common_dacl_table
                     ))
 
+<<<<<<< HEAD
+=======
+    def illegal_hw_pfcwd_global_check(self, old_config, target_config):
+        '''
+        Block adding or changing a PFC_WD|GLOBAL field when the PFC watchdog runs in hardware.
+        orchagent drops the GLOBAL row in that mode, and GCU refuses to remove it afterwards.
+        '''
+        old_global = old_config.get("PFC_WD", {}).get("GLOBAL", {})
+        target_global = target_config.get("PFC_WD", {}).get("GLOBAL", {})
+        changed = sorted(field for field, value in target_global.items() if old_global.get(field) != value)
+        if not changed:
+            return
+
+        from . import field_operation_validators
+        mechanism = field_operation_validators.read_statedb_entry(
+            self.scope, "PFC_WD_STATE_TABLE", "PFC_WD", "RECOVERY_MECHANISM")
+        if (mechanism or "").upper() == "HARDWARE":
+            raise IllegalPatchOperationError(
+                "PFC_WD|GLOBAL {} is not supported with hardware based PFC watchdog".format(", ".join(changed)))
+
+    def illegal_device_metadata_check(self, old_config, target_config):
+        '''
+        Block DEVICE_METADATA|localhost fields that a service restart cannot apply: they pick the
+        hwsku files, the switch_type, the ASIC a namespace is bound to or the database layout.
+        A chassis supervisor's swss writes asic_id at start, so it is only checked when set on both sides.
+        An ASIC's sub_role picks front-end or back-end namespaces, which host daemons read at start.
+        '''
+        reload = "a config reload"
+        fields = {
+            "hwsku": (None, reload),
+            "switch_type": ("switch", reload),
+            "asic_id": (None, reload),
+            "multidb_enabled": ("false", "a config save and reboot"),
+        }
+        if self.scope not in (None, multi_asic.DEFAULT_NAMESPACE, HOST_NAMESPACE):
+            fields["sub_role"] = (None, reload)
+        old_meta = old_config.get("DEVICE_METADATA", {}).get("localhost", {})
+        target_meta = target_config.get("DEVICE_METADATA", {}).get("localhost", {})
+        for field, (default, action) in fields.items():
+            old_value = old_meta.get(field) or default
+            target_value = target_meta.get(field) or default
+            if field == "asic_id" and not (old_value and target_value):
+                continue
+            if old_value != target_value:
+                raise IllegalPatchOperationError(
+                    "DEVICE_METADATA|localhost {} cannot be changed from {} to {} by a patch; "
+                    "it needs {}".format(field, old_value, target_value, action))
+
+>>>>>>> c2e8d2c2 (NOS-22993: [gcu] Restart services that read config only at startup, once per patch (#1382))
     def validate_lanes(self, config_db):
         if "PORT" not in config_db:
             return True, None

@@ -145,9 +145,19 @@ class PatchApplier:
         self.logger.log_notice(f"{scope}: applying {changes_len} change{'s' if changes_len != 1 else ''} " \
                                f"in order{':' if changes_len > 0 else '.'}")
         current_config = old_config
+<<<<<<< HEAD
         for change in changes:
             self.logger.log_notice(f"  * {change}")
             current_config = self.changeapplier.apply(current_config, change)
+=======
+        try:
+            for change in changes:
+                self.logger.log_notice(f"  * {redact_for_log(change)}")  # noqa: E221 (pycodestyle 2.9.1)
+                current_config = self.changeapplier.apply(current_config, change)
+        finally:
+            # Changes already written stay in ConfigDB even if a later one fails.
+            self.changeapplier.restart_services()
+>>>>>>> c2e8d2c2 (NOS-22993: [gcu] Restart services that read config only at startup, once per patch (#1382))
 
         # Validate config updated successfully
         self.logger.log_notice(f"{scope}: verifying patch updates are reflected on ConfigDB.")
