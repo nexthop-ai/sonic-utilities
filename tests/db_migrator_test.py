@@ -1117,6 +1117,302 @@ class TestDhcpv4RelayMigrator(object):
         assert relay_entry.get("dhcpv4_servers") == [dhcp_server]
 
 
+<<<<<<< HEAD
+=======
+class TestPortDhcpServersToInterfaceMigrator(object):
+    @classmethod
+    def setup_class(cls):
+        os.environ['UTILITIES_UNIT_TESTING'] = "2"
+
+    @classmethod
+    def teardown_class(cls):
+        os.environ['UTILITIES_UNIT_TESTING'] = "0"
+        dbconnector.dedicated_dbs['CONFIG_DB'] = None
+
+    def test_migrate_port_dhcp_servers_to_interface_success(self):
+        dbconnector.dedicated_dbs['CONFIG_DB'] = os.path.join(mock_db_path, 'config_db', 'dns_nameserver_expected')
+        import db_migrator
+        dbmgtr = db_migrator.DBMigrator(None)
+
+        dbmgtr.configDB.set_entry("PORT", "Ethernet0", {
+            "lanes": "0",
+            "dhcp_servers": ["192.0.2.1", "192.0.2.2"],
+            "dhcpv6_servers": ["2001:db8::1"]
+        })
+        dbmgtr.configDB.set_entry("INTERFACE", "Ethernet0", {"NULL": "NULL"})
+
+        dbmgtr.migrate_port_dhcp_servers_to_interface()
+
+        intf_entry = dbmgtr.configDB.get_entry("INTERFACE", "Ethernet0")
+        assert intf_entry.get("dhcp_servers") == ["192.0.2.1", "192.0.2.2"]
+        assert intf_entry.get("dhcpv6_servers") == ["2001:db8::1"]
+
+        port_entry = dbmgtr.configDB.get_entry("PORT", "Ethernet0")
+        assert "dhcp_servers" not in port_entry
+        assert "dhcpv6_servers" not in port_entry
+        assert port_entry.get("lanes") == "0"
+
+    def test_migrate_port_dhcp_servers_skip_if_none(self):
+        dbconnector.dedicated_dbs['CONFIG_DB'] = os.path.join(mock_db_path, 'config_db', 'dns_nameserver_expected')
+        import db_migrator
+        dbmgtr = db_migrator.DBMigrator(None)
+
+        dbmgtr.configDB.set_entry("PORT", "Ethernet4", {"lanes": "4"})
+
+        dbmgtr.migrate_port_dhcp_servers_to_interface()
+
+        intf_entry = dbmgtr.configDB.get_entry("INTERFACE", "Ethernet4")
+        assert "dhcp_servers" not in intf_entry
+        assert dbmgtr.configDB.get_entry("PORT", "Ethernet4") == {"lanes": "4"}
+
+    def test_migrate_port_dhcp_servers_keeps_existing_interface_value(self):
+        dbconnector.dedicated_dbs['CONFIG_DB'] = os.path.join(mock_db_path, 'config_db', 'dns_nameserver_expected')
+        import db_migrator
+        dbmgtr = db_migrator.DBMigrator(None)
+
+        dbmgtr.configDB.set_entry("PORT", "Ethernet8", {
+            "lanes": "8",
+            "dhcp_servers": ["192.0.2.1"]
+        })
+        dbmgtr.configDB.set_entry("INTERFACE", "Ethernet8", {
+            "dhcp_servers": ["10.0.0.1"]
+        })
+
+        dbmgtr.migrate_port_dhcp_servers_to_interface()
+
+        intf_entry = dbmgtr.configDB.get_entry("INTERFACE", "Ethernet8")
+        assert intf_entry.get("dhcp_servers") == ["10.0.0.1"]
+
+        port_entry = dbmgtr.configDB.get_entry("PORT", "Ethernet8")
+        assert "dhcp_servers" not in port_entry
+
+    def test_migrate_port_dhcp_servers_drops_fields_on_non_l3_port(self):
+        dbconnector.dedicated_dbs['CONFIG_DB'] = os.path.join(mock_db_path, 'config_db', 'dns_nameserver_expected')
+        import db_migrator
+        dbmgtr = db_migrator.DBMigrator(None)
+
+        # Switchport: present in PORT, no INTERFACE entry
+        dbmgtr.configDB.set_entry("PORT", "Ethernet12", {
+            "lanes": "12",
+            "dhcp_servers": ["192.0.2.1"]
+        })
+
+        dbmgtr.migrate_port_dhcp_servers_to_interface()
+
+        assert not dbmgtr.configDB.get_entry("INTERFACE", "Ethernet12")
+        port_entry = dbmgtr.configDB.get_entry("PORT", "Ethernet12")
+        assert "dhcp_servers" not in port_entry
+        assert port_entry.get("lanes") == "12"
+
+    def test_migrate_port_dhcp_servers_wired_into_common_migration_ops(self):
+        dbconnector.dedicated_dbs['CONFIG_DB'] = os.path.join(mock_db_path, 'config_db', 'dns_nameserver_expected')
+        import db_migrator
+        dbmgtr = db_migrator.DBMigrator(None)
+
+        with patch_common_migration_ops_except(db_migrator, 'migrate_port_dhcp_servers_to_interface') as mock_migrate:
+            dbmgtr.common_migration_ops()
+
+        mock_migrate.assert_called_once()
+
+
+class TestSnmpAgentAddressDefaultVrfMigrator(object):
+    @classmethod
+    def setup_class(cls):
+        os.environ['UTILITIES_UNIT_TESTING'] = "2"
+
+    @classmethod
+    def teardown_class(cls):
+        os.environ['UTILITIES_UNIT_TESTING'] = "0"
+        dbconnector.dedicated_dbs['CONFIG_DB'] = None
+
+    def make_migrator(self):
+        dbconnector.dedicated_dbs['CONFIG_DB'] = os.path.join(mock_db_path, 'config_db', 'empty-config-input')
+        import db_migrator
+        return db_migrator.DBMigrator(None)
+
+    def agent_keys(self, dbmgtr):
+        return sorted(dbmgtr.configDB.get_keys("SNMP_AGENT_ADDRESS_CONFIG"))
+
+    def test_migrate_snmp_agent_address_rewrites_empty_vrf(self):
+        dbmgtr = self.make_migrator()
+        for key in ("10.1.0.32|161|", "10.1.0.33||", "10.1.0.34|161|mgmt", "10.1.0.35||mgmt",
+                    "fe80::1%eth0|1161|"):
+            dbmgtr.configDB.set_entry("SNMP_AGENT_ADDRESS_CONFIG", key, {})
+
+        with mock.patch.object(dbmgtr.configDB, "set_entry", wraps=dbmgtr.configDB.set_entry) as set_entry:
+            dbmgtr.migrate_snmp_agent_address_default_vrf()
+
+        # An interrupted run must leave the address in place: the new key is written before
+        # the legacy one is deleted, and the next run's collision branch cleans up.
+        calls = [c.args for c in set_entry.call_args_list]
+        write = calls.index(("SNMP_AGENT_ADDRESS_CONFIG", ("10.1.0.32", "161", "default"), {}))
+        delete = calls.index(("SNMP_AGENT_ADDRESS_CONFIG", ("10.1.0.32", "161", ""), None))
+        assert write < delete
+
+        assert self.agent_keys(dbmgtr) == [
+            ("10.1.0.32", "161", "default"),
+            ("10.1.0.33", "", "default"),
+            ("10.1.0.34", "161", "mgmt"),
+            ("10.1.0.35", "", "mgmt"),
+            ("fe80::1%eth0", "1161", "default"),
+        ]
+
+    def test_migrate_snmp_agent_address_keeps_existing_new_key(self):
+        dbmgtr = self.make_migrator()
+        dbmgtr.configDB.set_entry("SNMP_AGENT_ADDRESS_CONFIG", "10.1.0.32|161|", {})
+        dbmgtr.configDB.set_entry("SNMP_AGENT_ADDRESS_CONFIG", "10.1.0.32|161|default", {})
+
+        with mock.patch.object(dbmgtr.configDB, "set_entry", wraps=dbmgtr.configDB.set_entry) as set_entry:
+            dbmgtr.migrate_snmp_agent_address_default_vrf()
+
+        set_entry.assert_called_once_with("SNMP_AGENT_ADDRESS_CONFIG", ("10.1.0.32", "161", ""), None)
+        assert self.agent_keys(dbmgtr) == [("10.1.0.32", "161", "default")]
+
+    def test_migrate_snmp_agent_address_is_idempotent(self):
+        dbmgtr = self.make_migrator()
+        dbmgtr.configDB.set_entry("SNMP_AGENT_ADDRESS_CONFIG", "10.1.0.32|161|", {})
+        dbmgtr.configDB.set_entry("SNMP_AGENT_ADDRESS_CONFIG", "10.1.0.33||", {})
+        dbmgtr.configDB.set_entry("SNMP_AGENT_ADDRESS_CONFIG", "10.1.0.34|161|mgmt", {})
+
+        dbmgtr.migrate_snmp_agent_address_default_vrf()
+        first = self.agent_keys(dbmgtr)
+        with mock.patch.object(dbmgtr.configDB, "set_entry", wraps=dbmgtr.configDB.set_entry) as set_entry:
+            dbmgtr.migrate_snmp_agent_address_default_vrf()
+
+        set_entry.assert_not_called()
+        assert first == [("10.1.0.32", "161", "default"), ("10.1.0.33", "", "default"),
+                         ("10.1.0.34", "161", "mgmt")]
+        assert self.agent_keys(dbmgtr) == first
+
+    def test_migrate_snmp_agent_address_noop_without_table(self):
+        dbmgtr = self.make_migrator()
+        assert not dbmgtr.configDB.get_table("SNMP_AGENT_ADDRESS_CONFIG")
+
+        with mock.patch.object(dbmgtr.configDB, "set_entry", wraps=dbmgtr.configDB.set_entry) as set_entry:
+            dbmgtr.migrate_snmp_agent_address_default_vrf()
+
+        set_entry.assert_not_called()
+        assert not dbmgtr.configDB.get_table("SNMP_AGENT_ADDRESS_CONFIG")
+
+    def test_migrate_snmp_agent_address_wired_into_common_migration_ops(self):
+        dbmgtr = self.make_migrator()
+        import db_migrator
+
+        with patch_common_migration_ops_except(db_migrator, 'migrate_snmp_agent_address_default_vrf') as mock_migrate:
+            dbmgtr.common_migration_ops()
+
+        mock_migrate.assert_called_once()
+
+
+class TestTelemetryClientDstGroupMigrator(object):
+    TABLE = "TELEMETRY_CLIENT"
+
+    @classmethod
+    def setup_class(cls):
+        os.environ['UTILITIES_UNIT_TESTING'] = "2"
+
+    @classmethod
+    def teardown_class(cls):
+        os.environ['UTILITIES_UNIT_TESTING'] = "0"
+        dbconnector.dedicated_dbs['CONFIG_DB'] = None
+
+    def make_migrator(self):
+        dbconnector.dedicated_dbs['CONFIG_DB'] = os.path.join(mock_db_path, 'config_db', 'empty-config-input')
+        import db_migrator
+        return db_migrator.DBMigrator(None)
+
+    def subscription(self, dst_group):
+        return {"dst_group": dst_group, "path_target": "COUNTERS_DB",
+                "paths": "COUNTERS/Ethernet*", "report_type": "periodic"}
+
+    def seed(self, dbmgtr, groups, subscriptions):
+        dbmgtr.configDB.set_entry(self.TABLE, "Global", {"encoding": "JSON_IETF", "src_ip": "10.0.0.1"})
+        for name in groups:
+            dbmgtr.configDB.set_entry(self.TABLE, "DestinationGroup|" + name, {"dst_addr": "10.0.0.2:8081"})
+        for name, fields in subscriptions.items():
+            dbmgtr.configDB.set_entry(self.TABLE, "Subscription|" + name, fields)
+
+    def keys(self, dbmgtr):
+        return sorted(dbmgtr.configDB.get_keys(self.TABLE), key=str)
+
+    def test_drops_subscriptions_without_a_destination_group(self):
+        dbmgtr = self.make_migrator()
+        self.seed(dbmgtr, ["DCI", "HS"], {
+            "GOOD_FIRST": self.subscription("DCI"),
+            "GOOD_SECOND": self.subscription("HS"),
+            # Accepted by the old contains() check, rejected by the new must.
+            "SUBSTRING": self.subscription("CI"),
+            "NAMES_SUBSCRIPTION": self.subscription("GOOD_FIRST"),
+            "MISSING": self.subscription("NOPE"),
+            # A Subscription with no dst_group is outside this constraint.
+            "NO_GROUP": {"path_target": "COUNTERS_DB"},
+        })
+
+        dbmgtr.migrate_telemetry_client_dst_group()
+
+        assert self.keys(dbmgtr) == sorted([
+            "Global",
+            ("DestinationGroup", "DCI"),
+            ("DestinationGroup", "HS"),
+            ("Subscription", "GOOD_FIRST"),
+            ("Subscription", "GOOD_SECOND"),
+            ("Subscription", "NO_GROUP"),
+        ], key=str)
+        assert dbmgtr.configDB.get_entry(self.TABLE, "Subscription|GOOD_SECOND") == self.subscription("HS")
+
+    def test_logs_each_dropped_subscription(self):
+        dbmgtr = self.make_migrator()
+        self.seed(dbmgtr, ["DCI"], {"SUBSTRING": self.subscription("CI")})
+        import db_migrator
+
+        with mock.patch.object(db_migrator.log, "log_notice") as log_notice:
+            dbmgtr.migrate_telemetry_client_dst_group()
+
+        messages = [c.args[0] for c in log_notice.call_args_list]
+        assert any("Subscription|SUBSTRING" in m and "'CI'" in m for m in messages), messages
+
+    def test_is_idempotent(self):
+        dbmgtr = self.make_migrator()
+        self.seed(dbmgtr, ["DCI"], {"GOOD": self.subscription("DCI"), "BAD": self.subscription("CI")})
+
+        dbmgtr.migrate_telemetry_client_dst_group()
+        first = self.keys(dbmgtr)
+        with mock.patch.object(dbmgtr.configDB, "set_entry", wraps=dbmgtr.configDB.set_entry) as set_entry:
+            dbmgtr.migrate_telemetry_client_dst_group()
+
+        set_entry.assert_not_called()
+        assert self.keys(dbmgtr) == first
+        assert ("Subscription", "BAD") not in first
+
+    def test_noop_when_all_references_are_valid(self):
+        dbmgtr = self.make_migrator()
+        self.seed(dbmgtr, ["HS", "FS"], {"A": self.subscription("HS"), "B": self.subscription("FS")})
+
+        with mock.patch.object(dbmgtr.configDB, "set_entry", wraps=dbmgtr.configDB.set_entry) as set_entry:
+            dbmgtr.migrate_telemetry_client_dst_group()
+
+        set_entry.assert_not_called()
+
+    def test_noop_without_table(self):
+        dbmgtr = self.make_migrator()
+        assert not dbmgtr.configDB.get_table(self.TABLE)
+
+        with mock.patch.object(dbmgtr.configDB, "set_entry", wraps=dbmgtr.configDB.set_entry) as set_entry:
+            dbmgtr.migrate_telemetry_client_dst_group()
+
+        set_entry.assert_not_called()
+
+    def test_wired_into_common_migration_ops(self):
+        dbmgtr = self.make_migrator()
+        import db_migrator
+
+        with patch_common_migration_ops_except(db_migrator, 'migrate_telemetry_client_dst_group') as mock_migrate:
+            dbmgtr.common_migration_ops()
+
+        mock_migrate.assert_called_once()
+
+
+>>>>>>> f090a56c (NOS-21773: [db_migrator] drop TELEMETRY_CLIENT subscriptions with no DestinationGroup (#1347))
 class TestIPinIPTunnelEcnModeMigrator(object):
 
 

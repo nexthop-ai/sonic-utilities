@@ -10,7 +10,21 @@ import re
 from sonic_py_common import device_info, logger
 from swsscommon.swsscommon import SonicV2Connector, ConfigDBConnector, SonicDBConfig
 from minigraph import parse_xml
+<<<<<<< HEAD
 from utilities_common.helper import update_config
+=======
+from portconfig import get_extra_system_ports
+from utilities_common.helper import update_config, snmp_agent_address_key
+# Written by 'config reload' when it drops configuration this image has no
+# YANG model for. A migration needing an old value reads it from there,
+# because on a cold upgrade boot the field is gone from CONFIG_DB by now.
+from utilities_common.constants import CONFIG_DB_QUARANTINE_SUFFIX, SNMP_AGENT_LEGACY_DEFAULT_VRF
+from utilities_common.router_interface_conflicts import find_router_interface_vlan_conflicts, key_parts
+from utilities_common.evpn_nvo_kernel_mode import nvos_needing_per_vni, yang_models_have_nvo_kernel_mode
+from utilities_common.telemetry_client_conflicts import split_telemetry_client_dst_group_conflicts
+from utilities_common.vlan_mtu_conflicts import split_vlan_mtu_conflicts
+from utilities_common.bgp_auth_password import BGP_AUTH_PASSWORD_TABLES, tables_refusing_empty_bgp_auth_password
+>>>>>>> f090a56c (NOS-21773: [db_migrator] drop TELEMETRY_CLIENT subscriptions with no DestinationGroup (#1347))
 
 INIT_CFG_FILE = '/etc/sonic/init_cfg.json'
 MINIGRAPH_FILE = '/etc/sonic/minigraph.xml'
@@ -935,6 +949,126 @@ class DBMigrator():
             except Exception as e:
                 log.log_error(f"Failed to migrate DHCP servers for {vlan_key}: {str(e)}")
 
+<<<<<<< HEAD
+=======
+    def migrate_port_dhcp_servers_to_interface(self):
+        """
+        Move DHCP relay server lists on physical ports from the PORT table to
+        the INTERFACE table (NOS-15344).
+        """
+        try:
+            port_table = self.configDB.get_table("PORT")
+            intf_keys = self.configDB.get_keys("INTERFACE")
+        except Exception as e:
+            log.log_error(f"Failed to read PORT/INTERFACE tables: {str(e)}")
+            return
+
+        l3_ports = {key[0] if isinstance(key, tuple) else key for key in intf_keys}
+
+        def servers(entry, field):
+            # an empty list round-trips through config db as ['']
+            return [server for server in entry.get(field, []) if server]
+
+        for port_name, port_data in port_table.items():
+            fields = [f for f in ("dhcp_servers", "dhcpv6_servers") if f in port_data]
+            if not fields:
+                continue
+            try:
+                # Only an L3 port gets the fields moved; creating an INTERFACE
+                # entry for a switchport would turn it into a router port. A
+                # switchport's relay config was always inert — drop it rather
+                # than leave now-invalid config on PORT.
+                if port_name in l3_ports:
+                    intf_data = self.configDB.get_entry("INTERFACE", port_name) or {}
+                    moved_fields = []
+                    for field in fields:
+                        if field in intf_data:
+                            log.log_notice(f"Discarding PORT {field} for {port_name}: INTERFACE already"
+                                           f" has {intf_data[field]}, dropping {port_data[field]}")
+                        else:
+                            intf_data[field] = port_data[field]
+                            moved_fields.append(field)
+                    if moved_fields:
+                        self.configDB.set_entry("INTERFACE", port_name, intf_data)
+                        migrated_entry = self.configDB.get_entry("INTERFACE", port_name)
+                        if any(servers(migrated_entry, field) != servers(port_data, field)
+                               for field in moved_fields):
+                            log.log_error(f"Verification failed for {port_name}: INTERFACE write did not"
+                                          f" persist, keeping both PORT and INTERFACE copies")
+                            continue
+                        log.log_notice(f"Migrated DHCP servers for {port_name} from PORT to INTERFACE table")
+                else:
+                    dropped = {field: port_data[field] for field in fields}
+                    log.log_notice(f"Dropping inert DHCP servers from non-L3 port {port_name}: {dropped}."
+                                   f" A switchport's relay config was never in effect. To relay on this"
+                                   f" port, make it L3 and run 'config interface dhcp_relay add'")
+
+                updated_port_data = port_data.copy()
+                for field in fields:
+                    del updated_port_data[field]
+                self.configDB.set_entry("PORT", port_name, updated_port_data)
+            except Exception as e:
+                log.log_error(f"Failed to migrate DHCP servers for {port_name}: {str(e)}")
+
+    def migrate_snmp_agent_address_default_vrf(self):
+        """
+        Rewrite SNMP_AGENT_ADDRESS_CONFIG keys that spell the default VRF as an
+        empty key component: 'ip|port|' becomes 'ip|port|default'. The port
+        component is kept as is, including an empty one.
+        """
+        try:
+            agent_table = self.configDB.get_table("SNMP_AGENT_ADDRESS_CONFIG")
+        except Exception as e:
+            log.log_error(f"Failed to read SNMP_AGENT_ADDRESS_CONFIG table: {str(e)}")
+            return
+
+        for old_key, value in agent_table.items():
+            if not isinstance(old_key, tuple) or len(old_key) != 3:
+                continue
+            ip, port, vrf = old_key
+            if vrf != SNMP_AGENT_LEGACY_DEFAULT_VRF:
+                continue
+            new_key = snmp_agent_address_key(ip, port, vrf)
+            old_text = '|'.join(old_key)
+            new_text = '|'.join(new_key)
+            try:
+                if new_key in agent_table:
+                    log.log_notice(f"Dropping SNMP agent address {old_text}: {new_text} already exists")
+                else:
+                    self.configDB.set_entry("SNMP_AGENT_ADDRESS_CONFIG", new_key, value)
+                    log.log_notice(f"Migrated SNMP agent address {old_text} to {new_text}")
+                self.configDB.set_entry("SNMP_AGENT_ADDRESS_CONFIG", old_key, None)
+            except Exception as e:
+                log.log_error(f"Failed to migrate SNMP agent address {old_text}: {str(e)}")
+
+    def migrate_telemetry_client_dst_group(self):
+        """
+        Drop TELEMETRY_CLIENT Subscriptions whose dst_group names no
+        DestinationGroup, as 'config reload' does for the saved file; this
+        covers a warm upgrade, which loads CONFIG_DB as it was. A row the
+        model rejects makes every GCU operation fail, including the patch that
+        would remove it. split_telemetry_client_dst_group_conflicts decides
+        what goes, and each dropped row is logged in full so it can be restored.
+        """
+        table_name = "TELEMETRY_CLIENT"
+        try:
+            table = self.configDB.get_table(table_name)
+        except Exception as e:
+            log.log_error(f"Failed to read {table_name} table: {str(e)}")
+            return
+
+        _, removed, reasons = split_telemetry_client_dst_group_conflicts({table_name: table})
+        for key, value in removed.get(table_name, {}).items():
+            name = '|'.join(key) if isinstance(key, tuple) else key
+            try:
+                self.configDB.set_entry(table_name, key, None)
+                log.log_notice(f"Removed {table_name}|{name} {value}")
+            except Exception as e:
+                log.log_error(f"Failed to drop {table_name}|{name}: {str(e)}")
+        for reason in reasons:
+            log.log_notice(reason)
+
+>>>>>>> f090a56c (NOS-21773: [db_migrator] drop TELEMETRY_CLIENT subscriptions with no DestinationGroup (#1347))
     def migrate_ipinip_tunnel_ecn_mode_mellanox(self):
         """
         Migrate IPINIP_TUNNEL ecn mode to copy_from_outer.
@@ -1492,6 +1626,35 @@ class DBMigrator():
         self.migrate_tacplus()
         self.migrate_aaa()
 
+<<<<<<< HEAD
+=======
+        self.migrate_port_dhcp_servers_to_interface()
+        self.migrate_snmp_agent_address_default_vrf()
+        self.migrate_telemetry_client_dst_group()
+        self.migrate_encryption_digest()
+
+    def migrate_encryption_digest(self):
+        """Record the master key's digest in DEVICE_METADATA|localhost when a config
+        encrypted before the digest existed comes up with none: a warm, fast or express
+        reboot restores CONFIG_DB without passing through the cold-boot check that
+        fills it in. Only the host CONFIG_DB carries master-key encrypted fields."""
+        if self.namespace:
+            return
+        try:
+            import master_key_manager.master_key_manager as mkm
+        except ImportError:
+            return
+        if not hasattr(mkm, "missing_digest"):
+            return
+        table, key, field = mkm.ENCRYPTION_DIGEST_FIELD
+        tables = {table} | set(mkm.master_key_registry().get("fields", {}))
+        config = {name: self.configDB.get_table(name) for name in tables}
+        digest = mkm.missing_digest(config)
+        if digest:
+            log.log_notice("Recording the master key's encryption digest in {}|{}".format(table, key))
+            self.configDB.mod_entry(table, key, {field: digest})
+
+>>>>>>> f090a56c (NOS-21773: [db_migrator] drop TELEMETRY_CLIENT subscriptions with no DestinationGroup (#1347))
     def migrate(self):
         version = self.get_version()
         log.log_info('Upgrading from version ' + version)
