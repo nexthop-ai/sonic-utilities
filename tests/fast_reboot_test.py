@@ -261,3 +261,116 @@ class TestControlPlaneAssistantLeftoverTunnel:
         res, calls = run_setup_control_plane_assistant(tmp_path, vxlan_tunnel=False, assistant_ip_list='10.0.0.1')
         assert res.returncode == 0, res.stderr
         assert calls == ['assistant -s 10.0.0.1 -m set', 'check_mirror_session_acls']
+<<<<<<< HEAD
+=======
+
+    @pytest.mark.parametrize("stp_mode", ["pvst", "mst"])
+    @pytest.mark.parametrize("reboot_type", ["warm-reboot", "fast-reboot"])
+    def test_reboot_refused_with_spanning_tree_configured(self, stp_mode, reboot_type):
+        result = run_spanning_tree_check(stp_mode, reboot_type)
+
+        assert result.returncode == 2
+        assert "reboot continues" not in result.stdout
+        assert f"mode {stp_mode}" in result.stderr
+        assert f"{reboot_type} is not supported" in result.stderr
+        assert "cold reboot" in result.stderr
+
+    def test_reboot_continues_without_spanning_tree(self):
+        result = run_spanning_tree_check("")
+
+        assert result.returncode == 0
+        assert "reboot continues" in result.stdout
+        assert result.stderr == ""
+
+    def test_spanning_tree_check_runs_before_the_reboot_is_armed(self):
+        lines = FAST_REBOOT.read_text().splitlines()
+        check = lines.index("abort_reboot_if_spanning_tree_is_configured")
+        armed = next(i for i, line in enumerate(lines) if line.startswith('case "$REBOOT_TYPE" in'))
+
+        assert check < armed
+
+
+# stop_service picks a stop path from the FEATURE row's scope fields, so these tests extract it
+# with its two scope helpers and record which path ran.
+SCOPE_FUNCTIONS = ['is_asic_service', 'is_global_service', 'stop_service']
+
+SCOPE_DB_CLI_STUB = '''#!/bin/bash
+if [[ "$2" == "hget" ]]; then
+    case "$4" in
+        has_global_scope) printf '%s' "${HAS_GLOBAL_SCOPE}" ;;
+        has_per_asic_scope) printf '%s' "${HAS_PER_ASIC_SCOPE}" ;;
+    esac
+elif [[ "$2" == "exists" ]]; then
+    printf '%s' "${ROW_EXISTS}"
+fi
+'''
+
+
+def run_stop_service(tmp_path, has_global_scope='', has_per_asic_scope='', row_exists='1'):
+    stub = tmp_path / 'sonic-db-cli'
+    stub.write_text(SCOPE_DB_CLI_STUB)
+    stub.chmod(0o755)
+    call_log = tmp_path / 'calls.log'
+    call_log.touch()
+
+    fast_reboot = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts', 'fast-reboot')
+    extract = ';'.join('/^function {}()/,/^}}/p'.format(name) for name in SCOPE_FUNCTIONS)
+    driver = (
+        f'source <(sed -n \'{extract}\' "{fast_reboot}")\n'
+        f'for f in {" ".join(SCOPE_FUNCTIONS)}; do declare -F $f > /dev/null || exit 99; done\n'  # noqa: E702
+        'stop_systemd_service() { echo "stop_systemd_service $*" >> "${CALL_LOG}"; }\n'
+        'execute_in_namespaces() { echo "execute_in_namespaces $*" >> "${CALL_LOG}"; }\n'
+        'stop_service swss\n'
+    )
+    env = os.environ.copy()
+    env.update({
+        'PATH': f"{tmp_path}:{env.get('PATH', '')}",
+        'HAS_GLOBAL_SCOPE': has_global_scope,
+        'HAS_PER_ASIC_SCOPE': has_per_asic_scope,
+        'ROW_EXISTS': row_exists,
+        'CALL_LOG': str(call_log),
+    })
+    # No errexit: fast-reboot turns it off before the shutdown loop that calls stop_service.
+    res = subprocess.run(['bash', '-c', driver], env=env, capture_output=True, text=True)
+    assert res.returncode != 99, 'functions not extracted from fast-reboot: {}'.format(res.stderr)
+    return res, call_log.read_text().splitlines()
+
+
+class TestStopServiceScope:
+    def test_row_without_scope_fields_is_stopped(self, tmp_path):
+        res, calls = run_stop_service(tmp_path)
+        assert res.returncode == 0, res.stderr
+        assert calls == ['stop_systemd_service swss']
+
+    def test_service_without_a_feature_row_is_left_alone(self, tmp_path):
+        """A service listed for shutdown but absent from FEATURE is not a feature, so it is skipped.
+
+        The shutdown order file is static and can name a service with no FEATURE row at all.
+        Reading that as global scope would stop a service the unpatched script leaves running,
+        so the absent-field default is deliberately confined to rows that exist.
+        """
+        res, calls = run_stop_service(tmp_path, row_exists='0')
+        assert res.returncode == 0, res.stderr
+        assert calls == []
+
+    @pytest.mark.parametrize('has_global_scope', ['True', 'true', 'TRUE'])
+    def test_global_scope_is_stopped_whatever_the_case(self, tmp_path, has_global_scope):
+        res, calls = run_stop_service(tmp_path, has_global_scope=has_global_scope)
+        assert res.returncode == 0, res.stderr
+        assert calls == ['stop_systemd_service swss']
+
+    def test_explicit_false_global_scope_is_not_stopped(self, tmp_path):
+        res, calls = run_stop_service(tmp_path, has_global_scope='False')
+        assert res.returncode == 0, res.stderr
+        assert calls == []
+
+    def test_per_asic_scope_alone_stops_in_asic_namespaces(self, tmp_path):
+        res, calls = run_stop_service(tmp_path, has_global_scope='False', has_per_asic_scope='True')
+        assert res.returncode == 0, res.stderr
+        assert calls == ['execute_in_namespaces asic stop_systemd_service swss']
+
+    def test_both_scopes_stop_in_all_namespaces(self, tmp_path):
+        res, calls = run_stop_service(tmp_path, has_global_scope='True', has_per_asic_scope='True')
+        assert res.returncode == 0, res.stderr
+        assert calls == ['execute_in_namespaces all stop_systemd_service swss']
+>>>>>>> baccfdea (NOS-15456: [fast-reboot] Read an absent FEATURE scope field as its default (#1428))

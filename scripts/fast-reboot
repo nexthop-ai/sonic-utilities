@@ -183,12 +183,18 @@ function is_asic_service()
     [[ x"${has_per_asic_scope,,}" == x"true" ]] && echo 1 || echo 0
 }
 
-# Determines if a given service has global scope.
+# Determines if a given service has global scope. On an existing row an absent
+# has_global_scope means global, matching the field's YANG default; a service
+# with no FEATURE row at all does not.
 function is_global_service()
 {
     local -r service=$1
     local -r has_global_scope=$(sonic-db-cli CONFIG_DB hget "FEATURE|$service" has_global_scope)
-    [[ x"${has_global_scope,,}" == x"true" ]] && echo 1 || echo 0
+    if [[ -n "${has_global_scope}" ]]; then
+        [[ x"${has_global_scope,,}" == x"true" ]] && echo 1 || echo 0
+    else
+        [[ $(sonic-db-cli CONFIG_DB exists "FEATURE|$service") == 1 ]] && echo 1 || echo 0
+    fi
 }
 
 # Stop systemd service
