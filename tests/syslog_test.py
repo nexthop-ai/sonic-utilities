@@ -20,9 +20,9 @@ from syslog_util.common import FEATURE_TABLE, \
                                SYSLOG_CONFIG_FEATURE_TABLE, \
                                SYSLOG_RATE_LIMIT_INTERVAL, \
                                SYSLOG_RATE_LIMIT_BURST, \
-                               FEATURE_HAS_GLOBAL_SCOPE, \
-                               FEATURE_HAS_PER_ASIC_SCOPE, \
-                               SUPPORT_RATE_LIMIT
+                               SUPPORT_RATE_LIMIT, \
+                               extract_feature_data
+from utilities_common.general import FEATURE_HAS_GLOBAL_SCOPE, FEATURE_HAS_PER_ASIC_SCOPE
 
 from .mock_tables import dbconnector
 from .syslog_input import config_mock
@@ -543,6 +543,44 @@ class TestSyslog:
             ['docker', 'exec', '-i', 'swss1', 'supervisorctl', 'status', 'containercfgd'],
             ignore_error=True, return_cmd=True
         ) in mock_run.call_args_list
+
+    @mock.patch('config.syslog.clicommon.run_command')
+    def test_enable_syslog_rate_limit_feature_without_scope_fields(self, mock_run):
+        db = Db()
+        db.cfgdb.set_entry(FEATURE_TABLE, 'bgp', {SUPPORT_RATE_LIMIT: 'true',
+                                                  'state': 'enabled'})
+
+        mock_run.side_effect = lambda command, **kwargs: (
+            ('bgp', 0) if command[:2] == ['docker', 'ps'] else ('no such process', 0)
+        )
+        runner = CliRunner()
+        result = runner.invoke(
+            config.config.commands['syslog'].commands['rate-limit-feature'].commands['enable'], ['bgp'], obj=db
+        )
+
+        assert result.exit_code == SUCCESS, result.output
+        assert 'Enabling syslog rate limit feature for bgp' in result.output
+
+    @pytest.mark.parametrize('scope_fields', [{}, {FEATURE_HAS_GLOBAL_SCOPE: 'true'}])
+    @mock.patch('config.syslog.multi_asic.get_num_asics', return_value=2)
+    @mock.patch('config.syslog.multi_asic.is_multi_asic', return_value=True)
+    def test_get_feature_names_to_proceed_without_scope_fields_multi_asic(
+            self, mock_is_multi_asic, mock_get_num_asics, scope_fields):
+        db = Db()
+        db.cfgdb.set_entry(FEATURE_TABLE, 'bgp', {SUPPORT_RATE_LIMIT: 'true',
+                                                  'state': 'enabled',
+                                                  **scope_fields})
+
+        assert config_syslog.get_feature_names_to_proceed(db, 'bgp', None) == ['bgp']
+
+    @mock.patch('syslog_util.common.multi_asic.is_multi_asic', return_value=True)
+    def test_extract_feature_data_without_scope_fields_multi_asic(self, mock_is_multi_asic):
+        features = {'bgp': {SUPPORT_RATE_LIMIT: 'true', 'state': 'enabled'}}
+
+        global_feature_data, per_ns_feature_data = extract_feature_data(features)
+
+        assert 'bgp' in global_feature_data
+        assert 'bgp' not in per_ns_feature_data
 
     @mock.patch('config.syslog.clicommon.run_command')
     def test_config_log_level(self, mock_run):

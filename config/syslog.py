@@ -9,6 +9,7 @@ import utilities_common.multi_asic as multi_asic_util
 from sonic_py_common import logger
 from sonic_py_common import multi_asic
 from syslog_util import common as syslog_common
+from utilities_common.general import feature_has_global_scope, feature_has_per_asic_scope
 
 
 SYSLOG_TABLE_CDB = "SYSLOG_SERVER"
@@ -537,11 +538,11 @@ def get_feature_names_to_proceed(db, service_name, namespace):
         else:
             feature_config = features[service_name]
             feature_list = []
-            if feature_config[syslog_common.FEATURE_HAS_GLOBAL_SCOPE].lower() == 'true':
+            if feature_has_global_scope(feature_config):
                 feature_list.append(service_name)
             
             if multi_asic.is_multi_asic():
-                if feature_config[syslog_common.FEATURE_HAS_PER_ASIC_SCOPE].lower() == 'true':
+                if feature_has_per_asic_scope(feature_config):
                     asic_count = multi_asic.get_num_asics()
                     for i in range(asic_count):
                         feature_list.append(multi_asic.get_container_name_from_asic_id(service_name, i))

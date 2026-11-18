@@ -1,5 +1,6 @@
 import click
 from sonic_py_common import multi_asic
+from utilities_common.general import feature_has_global_scope, feature_has_per_asic_scope
 
 
 FEATURE_TABLE = "FEATURE"
@@ -10,8 +11,6 @@ SYSLOG_CONFIG_FEATURE_TABLE = 'SYSLOG_CONFIG_FEATURE'
 SYSLOG_RATE_LIMIT_INTERVAL = 'rate_limit_interval'
 SYSLOG_RATE_LIMIT_BURST = 'rate_limit_burst'
 SUPPORT_RATE_LIMIT = 'support_syslog_rate_limit'
-FEATURE_HAS_GLOBAL_SCOPE = 'has_global_scope'
-FEATURE_HAS_PER_ASIC_SCOPE = 'has_per_asic_scope'
 
 
 def rate_limit_validator(interval, burst):
@@ -95,10 +94,10 @@ def extract_feature_data(features):
             continue
         
         if is_multi_asic:
-            if feature_config.get(FEATURE_HAS_GLOBAL_SCOPE, '').lower() == 'true':
+            if feature_has_global_scope(feature_config):
                 global_feature_data[feature_name] = feature_config
                 
-            if feature_config.get(FEATURE_HAS_PER_ASIC_SCOPE, '').lower() == 'true':
+            if feature_has_per_asic_scope(feature_config):
                 per_ns_feature_data[feature_name] = feature_config
         else:
             global_feature_data[feature_name] = feature_config

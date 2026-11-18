@@ -1,7 +1,8 @@
 import os
+from unittest import mock
 
 from click.testing import CliRunner
-from utilities_common.general import load_module_from_source
+from utilities_common.general import load_module_from_source, get_feature_state_data
 from importlib import reload
 
 test_path = os.path.dirname(os.path.abspath(__file__))
@@ -99,6 +100,13 @@ class TestLldp(object):
         lldp.parse_info(lldp_detail_info=True)
         output = lldp.get_summary_output(lldp_detail_info=True)
         assert output.strip('\n') == expected_lldpctl_xml_output[0].strip('\n')
+
+    @mock.patch('utilities_common.general.multi_asic.is_multi_asic', return_value=True)
+    def test_get_feature_state_data_without_scope_fields_multi_asic(self, mock_is_multi_asic):
+        config_db = mock.MagicMock()
+        config_db.get_entry.return_value = {'state': 'enabled'}
+
+        assert get_feature_state_data(config_db, 'lldp') == ('True', 'False')
 
     @classmethod
     def teardown_class(cls):
