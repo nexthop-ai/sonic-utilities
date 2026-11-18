@@ -1,0 +1,23 @@
+{
+    "VERSIONS|DATABASE": {
+        "VERSION": "version_202605_01"
+    },
+    "PREFIX_SET|PL_S3_LO_V4": {
+        "mode": "IPv4"
+    },
+    "PREFIX|PL_S3_LO_V4|10|10.8.13.1/32|": {
+        "action": "permit"
+    },
+    "PREFIX|PL_S3_LO_V4|20|10.2.0.0/16|16..24": {
+        "action": "permit"
+    },
+    "PREFIX|PL_S3_LO_V4|10.0.0.0/8|24..8": {
+        "action": "permit"
+    },
+    "PREFIX|PL_S3_LO_V4|30|10.3.0.0/16|exact": {
+        "action": "deny"
+    },
+    "PREFIX|PL_V6|2001:db8::/32|48..64": {
+        "action": "permit"
+    }
+}
