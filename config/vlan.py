@@ -3,6 +3,12 @@ import utilities_common.cli as clicommon
 import utilities_common.dhcp_relay_util as dhcp_relay_util
 import utilities_common.multi_asic as multi_asic_util
 from sonic_py_common import multi_asic
+<<<<<<< HEAD
+=======
+from utilities_common.db import Db
+from utilities_common.dangling_interface_references import references_to
+from utilities_common.router_interface import router_interface_refusal
+>>>>>>> a14d103c (NOS-24411: [db_migrator] Repair VLAN references to VLANs that no longer exist (#1469))
 
 from jsonpatch import JsonPatchConflict
 from time import sleep
@@ -241,6 +247,12 @@ def del_vlan(ctx, vid, multiple, no_restart_dhcp_relay):
 
             if vlan in db.cfgdb.get_table('DHCPV4_RELAY'):
                 ctx.fail(f"{vlan} cannot be removed as it is being used in DHCPV4_RELAY table.")
+
+            # STP_VLAN and STP_VLAN_PORT rows go with the VLAN (disable_stp_on_vlan).
+            references = references_to(db.cfgdb.get_table, 'VLAN', vlan, skip=('STP_VLAN', 'STP_VLAN_PORT'))
+            if references:
+                ctx.fail("{} can not be removed. First remove the configuration that references it: {}".format(
+                    vlan, ', '.join(references)))
             # set dhcpv4_relay table
             set_dhcp_relay_table('VLAN', db.cfgdb, vlan, None)
 

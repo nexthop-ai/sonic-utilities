@@ -1568,6 +1568,73 @@ class TestVlan(object):
         assert result.exit_code != 0
         assert "Error: Ethernet32 is part of portchannel!" in result.output
 
+<<<<<<< HEAD
+=======
+    def test_config_vlan_add_del_portchannel_member(self):
+        runner = CliRunner()
+        db = Db()
+        member = config.config.commands["vlan"].commands["member"]
+
+        def switchport_status():
+            result = runner.invoke(show.cli.commands["interfaces"].commands["switchport"].commands["status"],
+                                   obj=db)
+            assert result.exit_code == 0
+            return dict(line.split()[:2] for line in result.output.splitlines()[2:] if line.strip())
+
+        result = runner.invoke(member.commands["del"], ["4000", "PortChannel1001"], obj=db)
+        print(result.exit_code, result.output)
+        assert result.exit_code == 0
+        assert switchport_status()["PortChannel1001"] == "routed"
+
+        result = runner.invoke(member.commands["add"], ["1000", "PortChannel1001", "--untagged"], obj=db)
+        print(result.exit_code, result.output)
+        assert result.exit_code == 0
+        assert switchport_status()["PortChannel1001"] == "access"
+
+        result = runner.invoke(member.commands["add"], ["4000", "PortChannel1001"], obj=db)
+        print(result.exit_code, result.output)
+        assert result.exit_code == 0
+        assert switchport_status()["PortChannel1001"] == "trunk"
+
+        result = runner.invoke(show.cli.commands["vlan"].commands["brief"], [], obj=db)
+        print(result.exit_code, result.output)
+        assert result.exit_code == 0
+        assert result.output == show_vlan_brief_with_portchannel_output
+
+    def test_config_vlan_del_vlan_refused_while_referenced(self, mock_restart_dhcp_relay_service):
+        runner = CliRunner()
+        db = Db()
+        result = runner.invoke(config.config.commands["vlan"].commands["add"], ["1001"], obj=db)
+        assert result.exit_code == 0
+        references = [
+            ("BGP_NEIGHBOR", ("default", "Vlan1001"), {"asn": "65001"}),
+            ("BGP_PEER_GROUP", ("default", "pg"), {"local_addr": "Vlan1001"}),
+            ("NEIGH", ("Vlan1001", "10.0.0.2"), {"neigh": "00:11:22:33:44:55"}),
+            ("ROUTE_MAP", ("rm", "10"), {"route_operation": "permit", "match_neighbor": ["Vlan1001"]}),
+            ("DASH_HA_GLOBAL_CONFIG", "global", {"dpu_vlan": "Vlan1001"}),
+        ]
+        for table, key, entry in references:
+            db.cfgdb.set_entry(table, key, entry)
+        # Rows the deletion itself removes don't stop it.
+        db.cfgdb.set_entry("STP_VLAN", "Vlan1001", {"enabled": "true"})
+
+        result = runner.invoke(config.config.commands["vlan"].commands["del"], ["1001"], obj=db)
+        print(result.exit_code, result.output)
+        assert result.exit_code != 0
+        assert "Vlan1001 can not be removed. First remove the configuration that references it: " \
+            "BGP_NEIGHBOR|default|Vlan1001 neighbor, BGP_PEER_GROUP|default|pg local_addr, " \
+            "ROUTE_MAP|rm|10 match_neighbor, NEIGH|Vlan1001|10.0.0.2 port, " \
+            "DASH_HA_GLOBAL_CONFIG|global dpu_vlan" in result.output
+        assert "Vlan1001" in db.cfgdb.get_keys("VLAN")
+
+        for table, key, _ in references:
+            db.cfgdb.set_entry(table, key, None)
+        result = runner.invoke(config.config.commands["vlan"].commands["del"], ["1001"], obj=db)
+        print(result.exit_code, result.output)
+        assert result.exit_code == 0
+        assert "Vlan1001" not in db.cfgdb.get_keys("VLAN")
+
+>>>>>>> a14d103c (NOS-24411: [db_migrator] Repair VLAN references to VLANs that no longer exist (#1469))
     @pytest.mark.parametrize("ip_version", ["ipv4", "ipv6"])
     def test_config_add_del_vlan_dhcp_relay_with_empty_entry(self, ip_version, mock_restart_dhcp_relay_service):
         runner = CliRunner()
