@@ -46,6 +46,26 @@ from utilities_common.general import load_db_config, load_module_from_source
 from .validated_config_db_connector import ValidatedConfigDBConnector
 import utilities_common.multi_asic as multi_asic_util
 from utilities_common.flock import try_lock
+<<<<<<< HEAD
+=======
+from utilities_common.constants import CONFIG_DB_QUARANTINE_SUFFIX, DEFAULT_VRF, SNMP_AGENT_LEGACY_DEFAULT_VRF
+from utilities_common.constants import SFLOW_DEFAULT_COLLECTOR_PORT
+from utilities_common.router_interface_conflicts import find_router_interface_vlan_conflicts, key_parts
+from utilities_common.stp_yang_conflicts import split_stp_yang_conflicts
+from utilities_common.telemetry_client_conflicts import split_telemetry_client_dst_group_conflicts
+from utilities_common.vlan_mtu_conflicts import split_vlan_mtu_conflicts
+from utilities_common.lag_member_negotiation import describe_link_negotiation, get_supported_speeds, \
+    lag_member_negotiation_conflict
+from utilities_common.evpn_nvo_kernel_mode import pin_evpn_nvo_kernel_mode
+from utilities_common.pfc_asym import PFC_ASYM_UNSUPPORTED_MSG, turn_off_pfc_asym
+from utilities_common.bgp_auth_password import drop_empty_bgp_auth_password, tables_refusing_empty_bgp_auth_password
+from utilities_common.prefix_masklength_range import (models_refuse_malformed_masklength_range,
+                                                      split_malformed_prefix_rows)
+from utilities_common.dangling_interface_references import (interface_reference_rules,
+                                                            split_dangling_interface_references)
+from utilities_common.router_interface import router_interface_refusal
+from utilities_common.chassis import is_bmc
+>>>>>>> 3632a3ba (NOS-23414: [db_migrator] Repair references to interfaces that no longer exist (#1465))
 from utilities_common import hft as hft_common
 from utilities_common import port_mirror
 from utilities_common.mirror import connect_mirror_session_state_db, is_mirror_session_label_capable
@@ -1915,6 +1935,373 @@ def config_file_yang_validation(filename):
     return True
 
 
+<<<<<<< HEAD
+=======
+def yang_model_field_names(table_container):
+    """
+    Collect every leaf and leaf-list name anywhere under a table's YANG
+    container.
+
+    The result is deliberately a superset: it only decides what is definitely
+    absent from the model, so a name that is valid in a nested context but not
+    at the level it appears in the config is kept. Keeping too much degrades to
+    the previous behaviour (validation still rejects it); removing too much
+    would discard live configuration.
+    """
+    names = set()
+    pending = [table_container]
+    while pending:
+        snode = pending.pop()
+        for child in snode.children():
+            if child.keyword() in ('leaf', 'leaf-list'):
+                names.add(child.name())
+            else:
+                pending.append(child)
+    return names
+
+
+def is_type1_map_table(table_container):
+    """
+    True for the tables whose entries are key to value maps, where the field
+    names are data rather than leaf names: DSCP_TO_TC_MAP|AZURE is stored as
+    {"0": "1", ... "63": "7"} while the model's leaves are name, dscp and tc.
+    Nothing in such a table can be judged by field name.
+
+    sonic_yang_ext already carries the set as Type_1_list_maps_model, so it is
+    read from there rather than restated.
+    """
+    return any(child.name() in Type_1_list_maps_model
+               for child in table_container.children())
+
+
+def prune_config_to_yang_models(config, sy):
+    """
+    Split a single-scope ConfigDB dict into the part the current YANG models
+    describe and the part they do not.
+
+    Returns (kept, removed). Both are ConfigDB-shaped, so `removed` can be
+    written out as a config fragment and re-applied once its models exist.
+    """
+    kept = {}
+    removed = {}
+
+    for table, table_data in config.items():
+        if table in TABLES_WITHOUT_YANG_MODELS:
+            kept[table] = table_data
+            continue
+
+        cmap_entry = sy.confDbYangMap.get(table)
+        if cmap_entry is None:
+            # No YANG model for the table at all.
+            removed[table] = table_data
+            continue
+
+        if not isinstance(table_data, dict):
+            kept[table] = table_data
+            continue
+
+        if is_type1_map_table(cmap_entry['container']):
+            kept[table] = table_data
+            continue
+
+        allowed = yang_model_field_names(cmap_entry['container'])
+        kept_entries = {}
+        removed_entries = {}
+        for key, entry in table_data.items():
+            if not isinstance(entry, dict):
+                kept_entries[key] = entry
+                continue
+            kept_fields = {f: v for f, v in entry.items() if f in allowed}
+            removed_fields = {f: v for f, v in entry.items() if f not in allowed}
+            # An entry whose every field was pruned is dropped rather than kept
+            # as {}: all of its data is in the quarantine, and an empty entry
+            # can fail validation in a new way if the model marks a leaf
+            # mandatory. An entry that was already empty is left alone.
+            if kept_fields or not removed_fields:
+                kept_entries[key] = kept_fields
+            if removed_fields:
+                removed_entries[key] = removed_fields
+
+        # Symmetric with the entry-level guard above: do not leave a table
+        # behind that pruning emptied, only one that arrived empty.
+        if kept_entries or not removed_entries:
+            kept[table] = kept_entries
+        if removed_entries:
+            removed[table] = removed_entries
+
+    return kept, removed
+
+
+def split_router_interface_vlan_conflicts(config):
+    """
+    Split out the entries that leave a port or PortChannel both a VLAN member
+    and a router interface, which the models reject but older images could
+    save. find_router_interface_vlan_conflicts decides which side goes.
+    Returns (kept, removed), both ConfigDB shaped; a table the split empties
+    is left out of kept.
+    """
+    drop = find_router_interface_vlan_conflicts(config)
+    if not drop:
+        return config, {}
+
+    kept = dict(config)
+    removed = {}
+    for table, keys in drop.items():
+        entries = config[table]
+        removed[table] = {key: entries[key] for key in keys}
+        remaining = {key: entry for key, entry in entries.items() if key not in removed[table]}
+        if remaining:
+            kept[table] = remaining
+        else:
+            del kept[table]
+    return kept, removed
+
+
+def merge_config_fragments(first, second):
+    """Merge two ConfigDB-shaped fragments, fields of a shared entry included."""
+    merged = {table: dict(entries) if isinstance(entries, dict) else entries
+              for table, entries in first.items()}
+    for table, entries in second.items():
+        if not isinstance(merged.get(table), dict) or not isinstance(entries, dict):
+            merged[table] = entries
+            continue
+        for key, entry in entries.items():
+            existing = merged[table].get(key)
+            if isinstance(existing, dict) and isinstance(entry, dict):
+                merged[table][key] = dict(existing, **entry)
+            else:
+                merged[table][key] = entry
+    return merged
+
+
+def plan_config_reconciliation(filename):
+    """
+    Work out what in a config file this image's YANG models do not accept.
+
+    Returns (kept, unmodeled, conflicts, refused, reasons, scoped). `kept` is
+    the config with the rejected parts taken out or repaired, including the
+    EVPN NVOs that need it set to kernel_mode per_vni (pin_evpn_nvo_kernel_mode)
+    when the models have kernel_mode. `unmodeled` is
+    what no model describes, `conflicts` is what
+    split_router_interface_vlan_conflicts took out and `refused` is what
+    split_stp_yang_conflicts took out plus the VLAN mtus that
+    split_vlan_mtu_conflicts lowered, the pfc_asym "on" values that
+    turn_off_pfc_asym set to "off", the empty BGP auth_password values the
+    loaded models refuse, which drop_empty_bgp_auth_password dropped, the
+    TELEMETRY_CLIENT Subscriptions split_telemetry_client_dst_group_conflicts
+    took out, and the PREFIX rows whose masklength_range the loaded models
+    refuse, which split_malformed_prefix_rows took out, and the rows, fields
+    and leaf-list elements naming an interface that does not exist, with the
+    static routes that left without a nexthop, which
+    split_dangling_interface_references took out, all ConfigDB shaped so they
+    can be re-applied later. `reasons` is one line per entry in `refused` and per
+    kernel_mode change. `scoped` says whether the fragments are keyed by namespace, as a
+    multi-asic file is. Touches no files.
+    """
+    config = read_json_file(filename)
+    if not isinstance(config, dict):
+        return config, {}, {}, {}, [], False
+
+    sy = sonic_yang.SonicYang(YANG_DIR)
+    sy.loadYangModel()
+    # Models from before kernel_mode would refuse the leaf, so the pin waits
+    # for them; this and the models can then reach a branch in either order.
+    nvo_model = sy.confDbYangMap.get('VXLAN_EVPN_NVO')
+    pin_kernel_mode = nvo_model is not None and 'kernel_mode' in yang_model_field_names(nvo_model['container'])
+    password_tables = tables_refusing_empty_bgp_auth_password(sy)
+    prefix_gated = models_refuse_malformed_masklength_range(sy)
+    interface_rules = interface_reference_rules(sy)
+
+    # No caller reaches this with a scoped file today: reload only reconciles
+    # the individual per-asic files, which are flat. Kept for the combined
+    # multi-asic file that multiasic_single_file_mode handles.
+    scoped = multi_asic.is_multi_asic() and HOST_NAMESPACE in config
+    scopes = list(config.keys()) if scoped else [HOST_NAMESPACE]
+
+    unmodeled = {}
+    conflicts = {}
+    refused = {}
+    reasons = []
+    for scope in scopes:
+        scope_config = config[scope] if scoped else config
+        if not isinstance(scope_config, dict):
+            continue
+        kept, removed = prune_config_to_yang_models(scope_config, sy)
+        kept, conflicting = split_router_interface_vlan_conflicts(kept)
+        kept, stp_removed, stp_reasons = split_stp_yang_conflicts(kept)
+        kept, mtu_lowered, mtu_reasons = split_vlan_mtu_conflicts(kept)
+        kept, asym_off, asym_reasons = turn_off_pfc_asym(kept)
+        kept, empty_passwords, password_reasons = drop_empty_bgp_auth_password(kept, password_tables)
+        kept, telemetry_removed, telemetry_reasons = split_telemetry_client_dst_group_conflicts(kept)
+        kept, prefix_removed, prefix_reasons = (
+            split_malformed_prefix_rows(kept) if prefix_gated else (kept, {}, []))
+        kept, dangling_removed, dangling_reasons = split_dangling_interface_references(kept, interface_rules)
+        kept, pinned = pin_evpn_nvo_kernel_mode(kept) if pin_kernel_mode else (kept, [])
+        refused_here = {}
+        for fragment in (stp_removed, mtu_lowered, asym_off, empty_passwords, telemetry_removed, prefix_removed,
+                         dangling_removed):
+            refused_here = merge_config_fragments(refused_here, fragment)
+        scope_reasons = (stp_reasons + mtu_reasons + asym_reasons + password_reasons + telemetry_reasons
+                         + prefix_reasons + dangling_reasons + pinned)
+        if not removed and not conflicting and not scope_reasons:
+            continue
+        if removed:
+            unmodeled[scope] = removed
+        if conflicting:
+            conflicts[scope] = conflicting
+        if refused_here:
+            refused[scope] = refused_here
+        reasons.extend("{}: {}".format(scope, r) if scoped else r for r in scope_reasons)
+        if scoped:
+            config[scope] = kept
+        else:
+            config = kept
+
+    if not scoped:
+        unmodeled = unmodeled.get(HOST_NAMESPACE, {})
+        conflicts = conflicts.get(HOST_NAMESPACE, {})
+        refused = refused.get(HOST_NAMESPACE, {})
+    return config, unmodeled, conflicts, refused, reasons, scoped
+
+
+def report_quarantined_config(filename, quarantine, scoped, kept):
+    """
+    Name every table and field that was dropped, so it is not lost quietly.
+
+    `kept` is the reconciled config, used only to tell a whole-table removal
+    from a field-level one: a table absent from it lost everything.
+    """
+    scopes = quarantine if scoped else {HOST_NAMESPACE: quarantine}
+    for scope, removed in scopes.items():
+        kept_scope = kept.get(scope, {}) if scoped else kept
+        kept_tables = kept_scope if isinstance(kept_scope, dict) else {}
+        for table, table_data in removed.items():
+            if not isinstance(table_data, dict):
+                log.log_warning(
+                    "config reload: quarantined table {} from {} is not a "
+                    "table body, so its contents are not itemised "
+                    "below".format(table, filename))
+                continue
+            keys = [k for k, v in table_data.items() if isinstance(v, dict)]
+            if not keys:
+                click.secho(
+                    "{}: table {} has no YANG model in this image and was not "
+                    "loaded".format(filename, table), fg='yellow')
+                continue
+            if table not in kept_tables:
+                # Whole table went, so naming its fields would misdescribe why.
+                click.secho(
+                    "{}: table {} has no YANG model in this image; its entries "
+                    "{} were not loaded".format(filename, table,
+                                                ', '.join(sorted(keys))),
+                    fg='yellow')
+                continue
+            for key in keys:
+                click.secho(
+                    "{}: {}|{} has no YANG model in this image for {} and it "
+                    "was not loaded".format(filename, table, key,
+                                            ', '.join(sorted(table_data[key]))),
+                    fg='yellow')
+
+
+def report_router_interface_conflicts(filename, conflicts, scoped):
+    """Name every entry taken out because a port was both routed and a VLAN member."""
+    scopes = conflicts if scoped else {HOST_NAMESPACE: conflicts}
+    for removed in scopes.values():
+        for table, entries in removed.items():
+            for key in sorted(entries):
+                name = key_parts(key)[-1] if table == 'VLAN_MEMBER' else key_parts(key)[0]
+                if table == 'VLAN_MEMBER':
+                    reason = "{} is a router interface".format(name)
+                else:
+                    reason = "{} is a VLAN member and has no address".format(name)
+                click.secho("{}: {}|{} was not loaded because {}".format(filename, table, key, reason),
+                            fg='yellow')
+
+
+def reconcile_config_file_with_yang_models(filename):
+    """
+    Drop tables and fields that no YANG model in this image describes, one
+    side of each port that is both a VLAN member and a router interface, and
+    spanning-tree configuration the model refuses (see
+    split_stp_yang_conflicts), from a config file carried over from an older image, and record what was
+    dropped alongside it as <filename>.unmigrated. A VLAN whose mtu is above
+    a member's is lowered to that member's mtu (see split_vlan_mtu_conflicts),
+    and its previous mtu is recorded the same way, as is a PORT pfc_asym
+    "on" that is set to "off" (see turn_off_pfc_asym) and an empty BGP
+    auth_password the models refuse, which is dropped (see
+    drop_empty_bgp_auth_password). A TELEMETRY_CLIENT Subscription whose
+    dst_group names no DestinationGroup is dropped and recorded the same way
+    (see split_telemetry_client_dst_group_conflicts), as is a PREFIX row whose
+    masklength_range the models refuse (see split_malformed_prefix_rows), and
+    a row, field or leaf-list element naming an interface that does not
+    exist, with a static route that leaves without a nexthop (see
+    split_dangling_interface_references).
+    An EVPN NVO without kernel_mode whose VTEP cannot have a single VXLAN
+    device gets kernel_mode per_vni (see pin_evpn_nvo_kernel_mode); nothing
+    is dropped for that.
+
+    A config saved by an older image is written to the older schema, and may
+    hold combinations a newer model rejects, so validating it against this
+    image's models before db_migrator has run can fail. Reconciling
+    first keeps the boot going, and the quarantine file both keeps the dropped
+    configuration recoverable and is where db_migrator reads values it has to
+    translate. That recoverability lasts one upgrade: config-setup's copy_list
+    names the files it carries and does not include this one, so the next
+    image install leaves the only copy under /host/old_config.
+
+    Repairing the file is best effort: on any error the file is left exactly as
+    it was and validation decides, so this cannot turn a config that would have
+    loaded into a failed boot.
+
+    Returns the quarantined configuration, or an empty dict when nothing was
+    dropped.
+    """
+    try:
+        config, unmodeled, conflicts, refused, reasons, scoped = plan_config_reconciliation(filename)
+        if scoped:
+            quarantine = {scope: merge_config_fragments(
+                              merge_config_fragments(unmodeled.get(scope, {}), conflicts.get(scope, {})),
+                              refused.get(scope, {}))
+                          for scope in set(unmodeled) | set(conflicts) | set(refused)}
+        else:
+            quarantine = merge_config_fragments(merge_config_fragments(unmodeled, conflicts), refused)
+        if not quarantine and not reasons:
+            return {}
+
+        quarantine_file = filename + CONFIG_DB_QUARANTINE_SUFFIX
+        # Quarantine first: a crash between the two writes then leaves the
+        # config untouched and reconcile simply runs again on the next boot.
+        # Each lands through a temp file because this runs during config-setup
+        # boot, where a cut mid-write would truncate the live config.
+        writes = ((quarantine, quarantine_file), (config, filename)) if quarantine else ((config, filename),)
+        for payload, target in writes:
+            tmp = target + '.tmp'
+            write_json_file(payload, tmp)
+            os.replace(tmp, target)
+
+        report_quarantined_config(filename, unmodeled, scoped, config)
+        report_router_interface_conflicts(filename, conflicts, scoped)
+        for reason in reasons:
+            click.secho("{}: {}".format(filename, reason), fg='yellow')
+            log.log_warning("config reload: {}: {}".format(filename, reason))
+        if not quarantine:
+            return {}
+        click.secho(
+            "{}: reconciled against this image's YANG models; dropped "
+            "configuration saved to {}".format(filename, quarantine_file),
+            fg='yellow')
+        log.log_warning(
+            "config reload: reconciled {} against YANG models, dropped "
+            "configuration saved to {}".format(filename, quarantine_file))
+        return quarantine
+    except Exception as e:
+        log.log_warning("config reload: could not reconcile {} against YANG "
+                        "models: {}".format(filename, str(e)))
+        return {}
+
+
+>>>>>>> 3632a3ba (NOS-23414: [db_migrator] Repair references to interfaces that no longer exist (#1465))
 def check_dhcpv4_relay_dependencies(db, object_name, object_type):
     """Checks if to be deleted interface/VRF is used in DHCPV4_RELAY table."""
     # Check if has_sonic_dhcpv4_relay flag is enabled

@@ -6098,6 +6098,762 @@ class TestGetMonitServicesByPrefix(object):
         result = config._get_monit_services_by_prefix('container_memory_')
         assert result == []
 
+<<<<<<< HEAD
+=======
+class FakeYangLeaf(object):
+    def __init__(self, name):
+        self._name = name
+
+    def name(self):
+        return self._name
+
+    def keyword(self):
+        return 'leaf'
+
+    def children(self, *args, **kwargs):
+        return []
+
+
+class FakeYangLeafList(FakeYangLeaf):
+    def keyword(self):
+        return 'leaf-list'
+
+
+class FakeYangContainer(object):
+    def __init__(self, name, children):
+        self._name = name
+        self._children = children
+
+    def name(self):
+        return self._name
+
+    def keyword(self):
+        return 'container'
+
+    def children(self, *args, **kwargs):
+        return self._children
+
+
+class FakeYangTable(object):
+    """
+    Stands in for a table's YANG container. Iterates as the set of field names
+    the model describes, which is what the stubbed yang_model_field_names
+    consumes, and answers children() for the Type_1 map check.
+    """
+    def __init__(self, fields, children=()):
+        self._fields = set(fields)
+        self._children = list(children)
+
+    def __iter__(self):
+        return iter(self._fields)
+
+    def children(self, *args, **kwargs):
+        return self._children
+
+
+def fake_sonic_yang(allowed_fields_by_table, type1_tables=()):
+    """
+    Stand in for a loaded SonicYang. Each table maps to the set of field names
+    its model describes, and that set doubles as the container handed to
+    yang_model_field_names, which these tests stub to the identity.
+    """
+    sy = mock.Mock()
+    sy.loadYangModel = mock.Mock()
+    sy.confDbYangMap = {
+        table: {'container': FakeYangTable(
+            fields,
+            [FakeYangLeaf(table + '_LIST')] if table in type1_tables else [])}
+        for table, fields in allowed_fields_by_table.items()
+    }
+    return sy
+
+
+class TestYangModelFieldNames(object):
+
+    def test_collects_leaves_at_every_depth(self):
+        nested = FakeYangContainer('localhost', [
+            FakeYangLeaf('hostname'),
+            FakeYangLeafList('nameservers'),
+            FakeYangContainer('inner', [FakeYangLeaf('deep')]),
+        ])
+        table = FakeYangContainer('DEVICE_METADATA', [nested])
+
+        assert config.yang_model_field_names(table) == \
+            {'hostname', 'nameservers', 'deep'}
+
+    def test_container_with_no_leaves(self):
+        table = FakeYangContainer('EMPTY', [])
+        assert config.yang_model_field_names(table) == set()
+
+
+class TestPruneConfigToYangModels(object):
+
+    def setup_method(self):
+        self.patcher = mock.patch(
+            'config.main.yang_model_field_names', side_effect=lambda c: set(c))
+        self.patcher.start()
+
+    def teardown_method(self):
+        self.patcher.stop()
+
+    def test_table_with_no_model_is_removed_whole(self):
+        sy = fake_sonic_yang({'PORT': {'admin_status'}})
+        cfg = {
+            'PORT': {'Ethernet0': {'admin_status': 'up'}},
+            'LINK_DEBOUNCE': {'Ethernet0': {'link_down_delay': '5000'}},
+        }
+        kept, removed = config.prune_config_to_yang_models(cfg, sy)
+        assert kept == {'PORT': {'Ethernet0': {'admin_status': 'up'}}}
+        assert removed == {'LINK_DEBOUNCE': {'Ethernet0': {'link_down_delay': '5000'}}}
+
+    def test_entry_whose_every_field_is_pruned_is_dropped(self):
+        # Keeping it as {} would put an entry with no fields in front of the
+        # validator, which can fail in a new way when a leaf is mandatory. All
+        # of its data is in the quarantine.
+        sy = fake_sonic_yang({'PORT': {'admin_status'}})
+        cfg = {'PORT': {'Ethernet0': {'admin_status': 'up'},
+                        'Ethernet4': {'link_down_delay': '5000'}}}
+        kept, removed = config.prune_config_to_yang_models(cfg, sy)
+        assert kept == {'PORT': {'Ethernet0': {'admin_status': 'up'}}}
+        assert removed == {'PORT': {'Ethernet4': {'link_down_delay': '5000'}}}
+
+    def test_table_emptied_by_pruning_is_dropped(self):
+        # Same rule one level up: a table pruning emptied leaves no ghost body
+        # behind, while one that arrived empty stays.
+        sy = fake_sonic_yang({'PORT': {'admin_status'}, 'VLAN': {'vlanid'}})
+        cfg = {'PORT': {'Ethernet0': {'link_down_delay': '5000'}},
+               'VLAN': {}}
+        kept, removed = config.prune_config_to_yang_models(cfg, sy)
+        assert 'PORT' not in kept
+        assert kept['VLAN'] == {}
+        assert removed == {'PORT': {'Ethernet0': {'link_down_delay': '5000'}}}
+
+    def test_entry_that_was_already_empty_is_kept(self):
+        sy = fake_sonic_yang({'PORT': {'admin_status'}})
+        cfg = {'PORT': {'Ethernet0': {}}}
+        kept, removed = config.prune_config_to_yang_models(cfg, sy)
+        assert kept == {'PORT': {'Ethernet0': {}}}
+        assert removed == {}
+
+    def test_field_with_no_model_is_removed_from_its_entry(self):
+        sy = fake_sonic_yang({'DEVICE_METADATA': {'hostname', 'hwsku'}})
+        cfg = {
+            'DEVICE_METADATA': {
+                'localhost': {
+                    'hostname': 'humm169',
+                    'hwsku': 'NH-5010-F-O64-C2',
+                    'orch_northbond_route_zmq_enabled': 'false',
+                }
+            }
+        }
+        kept, removed = config.prune_config_to_yang_models(cfg, sy)
+        assert kept == {'DEVICE_METADATA': {
+            'localhost': {'hostname': 'humm169', 'hwsku': 'NH-5010-F-O64-C2'}}}
+        assert removed == {'DEVICE_METADATA': {
+            'localhost': {'orch_northbond_route_zmq_enabled': 'false'}}}
+
+    def test_config_matching_the_models_is_untouched(self):
+        sy = fake_sonic_yang({'DEVICE_METADATA': {'hostname'}})
+        cfg = {'DEVICE_METADATA': {'localhost': {'hostname': 'humm169'}}}
+        kept, removed = config.prune_config_to_yang_models(cfg, sy)
+        assert kept == cfg
+        assert removed == {}
+
+    def test_table_without_a_model_by_design_is_kept(self):
+        # bgpraw has no YANG model and never did, so it is not a mismatch.
+        sy = fake_sonic_yang({'DEVICE_METADATA': {'hostname'}})
+        cfg = {
+            'DEVICE_METADATA': {'localhost': {'hostname': 'humm169'}},
+            'bgpraw': {'bgpraw': {'config': 'router bgp 65100'}},
+        }
+        kept, removed = config.prune_config_to_yang_models(cfg, sy)
+        assert kept == cfg
+        assert removed == {}
+
+
+class TestPruneAgainstRealYangModels(object):
+    """
+    Every other pruner test stubs the model walk, so nothing there exercises
+    the real container traversal or any table shape beyond a flat table of
+    flat entries. This one loads the models the image ships.
+    """
+
+    def test_type1_map_survives_and_obsolete_field_is_dropped(self):
+        import sonic_yang
+        sy = sonic_yang.SonicYang(config.YANG_DIR)
+        sy.loadYangModel()
+        cfg = {
+            # Field names here are dscp values, not leaf names.
+            'DSCP_TO_TC_MAP': {'AZURE': {'0': '1', '63': '7'}},
+            'CABLE_LENGTH': {'AZURE': {'Ethernet0': '5m'}},
+            'DEVICE_METADATA': {'localhost': {
+                'hostname': 'humm169',
+                'orch_southbound_zmq_enabled': 'true',
+            }},
+        }
+        kept, removed = config.prune_config_to_yang_models(cfg, sy)
+
+        assert kept['DSCP_TO_TC_MAP'] == {'AZURE': {'0': '1', '63': '7'}}
+        assert kept['CABLE_LENGTH'] == {'AZURE': {'Ethernet0': '5m'}}
+        assert 'DSCP_TO_TC_MAP' not in removed
+        assert 'CABLE_LENGTH' not in removed
+
+        assert kept['DEVICE_METADATA']['localhost'] == {'hostname': 'humm169'}
+        assert removed['DEVICE_METADATA']['localhost'] == \
+            {'orch_southbound_zmq_enabled': 'true'}
+
+
+class TestSplitRouterInterfaceVlanConflicts(object):
+
+    def test_memberships_of_addressed_router_interfaces_are_split_out(self):
+        cfg = {
+            'INTERFACE': {'Ethernet0': {}, 'Ethernet0|10.0.0.1/31': {}},
+            'PORTCHANNEL_INTERFACE': {'PortChannel2|10.0.0.3/31': {}},
+            'VLAN_MEMBER': {
+                'Vlan10|Ethernet0': {'tagging_mode': 'untagged'},
+                'Vlan10|PortChannel2': {'tagging_mode': 'tagged'},
+                'Vlan10|Ethernet4': {'tagging_mode': 'untagged'},
+            },
+        }
+        kept, removed = config.split_router_interface_vlan_conflicts(cfg)
+        assert kept['VLAN_MEMBER'] == {'Vlan10|Ethernet4': {'tagging_mode': 'untagged'}}
+        assert kept['INTERFACE'] == cfg['INTERFACE']
+        assert kept['PORTCHANNEL_INTERFACE'] == cfg['PORTCHANNEL_INTERFACE']
+        assert removed == {'VLAN_MEMBER': {
+            'Vlan10|Ethernet0': {'tagging_mode': 'untagged'},
+            'Vlan10|PortChannel2': {'tagging_mode': 'tagged'},
+        }}
+
+    def test_bare_router_interface_row_of_a_vlan_member_is_split_out(self):
+        cfg = {
+            'INTERFACE': {'Ethernet4': {'mpls': 'enable'}, 'Ethernet8': {}, 'Ethernet8|10.0.0.5/31': {}},
+            'VLAN_MEMBER': {'Vlan10|Ethernet4': {'tagging_mode': 'untagged'}},
+        }
+        kept, removed = config.split_router_interface_vlan_conflicts(cfg)
+        assert kept['VLAN_MEMBER'] == cfg['VLAN_MEMBER']
+        assert kept['INTERFACE'] == {'Ethernet8': {}, 'Ethernet8|10.0.0.5/31': {}}
+        assert removed == {'INTERFACE': {'Ethernet4': {'mpls': 'enable'}}}
+
+    def test_table_the_split_empties_is_left_out(self):
+        cfg = {
+            'INTERFACE': {'Ethernet0': {}, 'Ethernet0|10.0.0.1/31': {}},
+            'VLAN_MEMBER': {'Vlan10|Ethernet0': {'tagging_mode': 'untagged'}},
+        }
+        kept, removed = config.split_router_interface_vlan_conflicts(cfg)
+        assert 'VLAN_MEMBER' not in kept
+        assert removed == {'VLAN_MEMBER': {'Vlan10|Ethernet0': {'tagging_mode': 'untagged'}}}
+
+    def test_config_without_a_conflict_is_untouched(self):
+        cfg = {
+            'INTERFACE': {'Ethernet0': {}},
+            'VLAN_MEMBER': {'Vlan10|Ethernet4': {'tagging_mode': 'untagged'}},
+        }
+        kept, removed = config.split_router_interface_vlan_conflicts(cfg)
+        assert kept == cfg
+        assert removed == {}
+
+
+class TestMergeConfigFragments(object):
+
+    def test_fields_of_a_shared_entry_are_merged(self):
+        first = {'VLAN_MEMBER': {'Vlan10|Ethernet0': {'old_field': '1'}},
+                 'LINK_DEBOUNCE': {'Ethernet0': {'link_down_delay': '5000'}}}
+        second = {'VLAN_MEMBER': {'Vlan10|Ethernet0': {'tagging_mode': 'untagged'},
+                                  'Vlan10|Ethernet4': {'tagging_mode': 'tagged'}}}
+        assert config.merge_config_fragments(first, second) == {
+            'VLAN_MEMBER': {
+                'Vlan10|Ethernet0': {'old_field': '1', 'tagging_mode': 'untagged'},
+                'Vlan10|Ethernet4': {'tagging_mode': 'tagged'},
+            },
+            'LINK_DEBOUNCE': {'Ethernet0': {'link_down_delay': '5000'}},
+        }
+        assert first == {'VLAN_MEMBER': {'Vlan10|Ethernet0': {'old_field': '1'}},
+                         'LINK_DEBOUNCE': {'Ethernet0': {'link_down_delay': '5000'}}}
+
+
+class TestReconcileConfigFile(object):
+
+    def write_config(self, tmp_path, config_dict):
+        path = os.path.join(str(tmp_path), 'config_db.json')
+        with open(path, 'w') as f:
+            json.dump(config_dict, f)
+        return path
+
+    def test_quarantines_and_rewrites_the_file(self, tmp_path):
+        path = self.write_config(tmp_path, {
+            'DEVICE_METADATA': {
+                'localhost': {
+                    'hostname': 'humm169',
+                    'orch_northbond_route_zmq_enabled': 'false',
+                }
+            },
+            'LINK_DEBOUNCE': {'Ethernet0': {'link_down_delay': '5000'}},
+        })
+        sy = fake_sonic_yang({'DEVICE_METADATA': {'hostname'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        assert quarantine == {
+            'DEVICE_METADATA': {'localhost': {'orch_northbond_route_zmq_enabled': 'false'}},
+            'LINK_DEBOUNCE': {'Ethernet0': {'link_down_delay': '5000'}},
+        }
+        with open(path) as f:
+            assert json.load(f) == {
+                'DEVICE_METADATA': {'localhost': {'hostname': 'humm169'}}}
+        with open(path + config.CONFIG_DB_QUARANTINE_SUFFIX) as f:
+            assert json.load(f) == quarantine
+
+    def test_vlan_member_of_a_router_interface_is_quarantined(self, tmp_path):
+        path = self.write_config(tmp_path, {
+            'PORTCHANNEL_INTERFACE': {'PortChannel2': {}, 'PortChannel2|10.0.0.3/31': {}},
+            'VLAN_MEMBER': {
+                'Vlan10|PortChannel2': {'tagging_mode': 'untagged'},
+                'Vlan10|Ethernet4': {'tagging_mode': 'untagged'},
+            },
+        })
+        sy = fake_sonic_yang({'PORTCHANNEL_INTERFACE': set(),
+                              'VLAN_MEMBER': {'tagging_mode'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            with mock.patch('config.main.click.secho') as secho:
+                quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        printed = [c.args[0] for c in secho.call_args_list]
+        assert "{}: VLAN_MEMBER|Vlan10|PortChannel2 was not loaded because PortChannel2 is a " \
+               "router interface".format(path) in printed
+        assert not any("has no YANG model" in line for line in printed)
+        assert quarantine == {'VLAN_MEMBER': {
+            'Vlan10|PortChannel2': {'tagging_mode': 'untagged'}}}
+        with open(path) as f:
+            assert json.load(f) == {
+                'PORTCHANNEL_INTERFACE': {'PortChannel2': {}, 'PortChannel2|10.0.0.3/31': {}},
+                'VLAN_MEMBER': {'Vlan10|Ethernet4': {'tagging_mode': 'untagged'}},
+            }
+        with open(path + config.CONFIG_DB_QUARANTINE_SUFFIX) as f:
+            assert json.load(f) == quarantine
+
+    def test_other_mode_stp_config_is_quarantined(self, tmp_path):
+        path = self.write_config(tmp_path, {
+            'STP': {'GLOBAL': {'mode': 'pvst', 'priority': '4096'}},
+            'STP_MST_INST': {'1': {'bridge_priority': '4096'}},
+        })
+        sy = fake_sonic_yang({'STP': {'mode', 'priority'},
+                              'STP_MST_INST': {'bridge_priority'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            with mock.patch('config.main.click.secho') as secho:
+                quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        printed = [c.args[0] for c in secho.call_args_list]
+        assert "{}: STP_MST_INST|1 belongs to the other spanning-tree mode, the mode is " \
+               "pvst".format(path) in printed
+        assert quarantine == {'STP_MST_INST': {'1': {'bridge_priority': '4096'}}}
+        with open(path) as f:
+            assert json.load(f) == {'STP': {'GLOBAL': {'mode': 'pvst', 'priority': '4096'}}}
+        with open(path + config.CONFIG_DB_QUARANTINE_SUFFIX) as f:
+            assert json.load(f) == quarantine
+
+    def test_vlan_mtu_above_a_member_is_lowered_and_recorded(self, tmp_path):
+        path = self.write_config(tmp_path, {
+            'VLAN': {'Vlan10': {'vlanid': '10'}},
+            'PORT': {'Ethernet0': {'mtu': '9000'}},
+            'VLAN_MEMBER': {'Vlan10|Ethernet0': {'tagging_mode': 'untagged'}},
+        })
+        sy = fake_sonic_yang({'VLAN': {'vlanid', 'mtu'}, 'PORT': {'mtu'},
+                              'VLAN_MEMBER': {'tagging_mode'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            with mock.patch('config.main.click.secho') as secho:
+                quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        printed = [c.args[0] for c in secho.call_args_list]
+        assert "{}: VLAN|Vlan10 mtu lowered from 9100 (unset) to 9000, the mtu of member " \
+               "Ethernet0; routed traffic on Vlan10 is now limited to 9000 toward every member".format(path) in printed
+        assert quarantine == {'VLAN': {'Vlan10': {'mtu': '9100'}}}
+        with open(path) as f:
+            assert json.load(f)['VLAN'] == {'Vlan10': {'vlanid': '10', 'mtu': '9000'}}
+        with open(path + config.CONFIG_DB_QUARANTINE_SUFFIX) as f:
+            assert json.load(f) == quarantine
+
+    def test_port_pfc_asym_on_is_set_to_off_and_recorded(self, tmp_path):
+        path = self.write_config(tmp_path, {
+            'PORT': {'Ethernet0': {'mtu': '9100', 'pfc_asym': 'on'},
+                     'Ethernet4': {'mtu': '9100', 'pfc_asym': 'off'}},
+        })
+        sy = fake_sonic_yang({'PORT': {'mtu', 'pfc_asym'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            with mock.patch('config.main.click.secho') as secho:
+                quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        printed = [c.args[0] for c in secho.call_args_list]
+        assert "{}: PORT|Ethernet0 pfc_asym set to off because asymmetric PFC is not " \
+               "supported".format(path) in printed
+        assert quarantine == {'PORT': {'Ethernet0': {'pfc_asym': 'on'}}}
+        with open(path) as f:
+            assert json.load(f)['PORT'] == {'Ethernet0': {'mtu': '9100', 'pfc_asym': 'off'},
+                                            'Ethernet4': {'mtu': '9100', 'pfc_asym': 'off'}}
+        with open(path + config.CONFIG_DB_QUARANTINE_SUFFIX) as f:
+            assert json.load(f) == quarantine
+
+    def test_empty_bgp_auth_password_is_dropped_and_recorded(self, tmp_path):
+        path = self.write_config(tmp_path, {
+            'BGP_NEIGHBOR': {'10.0.0.1': {'asn': '65001', 'auth_password': ''}},
+        })
+        sy = fake_sonic_yang({'BGP_NEIGHBOR': {'asn', 'auth_password'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.tables_refusing_empty_bgp_auth_password', return_value=['BGP_NEIGHBOR']), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            with mock.patch('config.main.click.secho') as secho:
+                quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        printed = [c.args[0] for c in secho.call_args_list]
+        assert "{}: BGP_NEIGHBOR|10.0.0.1 auth_password dropped because the YANG model refuses an empty one".format(
+            path) in printed
+        assert quarantine == {'BGP_NEIGHBOR': {'10.0.0.1': {'auth_password': ''}}}
+        with open(path) as f:
+            assert json.load(f)['BGP_NEIGHBOR'] == {'10.0.0.1': {'asn': '65001'}}
+        with open(path + config.CONFIG_DB_QUARANTINE_SUFFIX) as f:
+            assert json.load(f) == quarantine
+
+    def test_empty_bgp_auth_password_is_kept_when_the_model_accepts_it(self, tmp_path):
+        path = self.write_config(tmp_path, {
+            'BGP_NEIGHBOR': {'10.0.0.1': {'asn': '65001', 'auth_password': ''}},
+        })
+        sy = fake_sonic_yang({'BGP_NEIGHBOR': {'asn', 'auth_password'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        assert quarantine == {}
+        with open(path) as f:
+            assert json.load(f)['BGP_NEIGHBOR'] == {'10.0.0.1': {'asn': '65001', 'auth_password': ''}}
+
+    def test_telemetry_subscription_without_a_destination_group_is_quarantined(self, tmp_path):
+        bad = {'dst_group': 'CI', 'path_target': 'COUNTERS_DB', 'paths': 'COUNTERS/Ethernet*'}
+        path = self.write_config(tmp_path, {
+            'TELEMETRY_CLIENT': {
+                'DestinationGroup|DCI': {'dst_addr': '10.0.0.2:8081'},
+                'Subscription|GOOD': dict(bad, dst_group='DCI'),
+                'Subscription|A': bad,
+            },
+        })
+        sy = fake_sonic_yang({'TELEMETRY_CLIENT': {'dst_addr', 'dst_group', 'path_target', 'paths'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            with mock.patch('config.main.click.secho') as secho:
+                quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        printed = [c.args[0] for c in secho.call_args_list]
+        assert "{}: TELEMETRY_CLIENT|Subscription|A dropped: dst_group 'CI' names no DestinationGroup, " \
+               "so it had no collector to dial".format(path) in printed
+        assert quarantine == {'TELEMETRY_CLIENT': {'Subscription|A': bad}}
+        with open(path) as f:
+            assert sorted(json.load(f)['TELEMETRY_CLIENT']) == ['DestinationGroup|DCI', 'Subscription|GOOD']
+        with open(path + config.CONFIG_DB_QUARANTINE_SUFFIX) as f:
+            assert json.load(f) == quarantine
+
+    def prefix_config(self, tmp_path):
+        return self.write_config(tmp_path, {
+            'PREFIX': {
+                'PL_S3_LO_V4|10|10.8.13.1/32|': {'action': 'permit'},
+                'PL_S3_LO_V4|20|10.2.0.0/16|16..24': {'action': 'permit'},
+            },
+        })
+
+    def test_prefix_row_with_a_masklength_range_the_models_refuse_is_quarantined(self, tmp_path):
+        path = self.prefix_config(tmp_path)
+        sy = fake_sonic_yang({'PREFIX': {'action'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.models_refuse_malformed_masklength_range', return_value=True), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            with mock.patch('config.main.click.secho') as secho:
+                quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        printed = [c.args[0] for c in secho.call_args_list]
+        assert "{}: PREFIX|PL_S3_LO_V4|10|10.8.13.1/32| dropped: its masklength_range is not 'exact' or " \
+               "<low>..<high> with bounds 0 to 128".format(path) in printed
+        assert quarantine == {'PREFIX': {'PL_S3_LO_V4|10|10.8.13.1/32|': {'action': 'permit'}}}
+        with open(path) as f:
+            assert json.load(f)['PREFIX'] == {'PL_S3_LO_V4|20|10.2.0.0/16|16..24': {'action': 'permit'}}
+        with open(path + config.CONFIG_DB_QUARANTINE_SUFFIX) as f:
+            assert json.load(f) == quarantine
+
+    def test_prefix_rows_are_kept_when_the_models_accept_any_masklength_range(self, tmp_path):
+        path = self.prefix_config(tmp_path)
+        sy = fake_sonic_yang({'PREFIX': {'action'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        assert quarantine == {}
+        with open(path) as f:
+            assert len(json.load(f)['PREFIX']) == 2
+
+    def dangling_interface_config(self, tmp_path):
+        return self.write_config(tmp_path, {
+            'PORT': {'Ethernet0': {'lanes': '0'}},
+            'STATIC_ROUTE': {'default|10.0.0.0/24': {'advertise': 'false'}, 'default|10.0.1.0/24': {}},
+            'STATIC_ROUTE_NEXTHOP': {
+                'default|10.0.0.0/24|10.1.1.1|Ethernet8': {'distance': '10'},
+                'default|10.0.1.0/24|10.1.1.1|Ethernet8': {'distance': '10'},
+                'default|10.0.1.0/24|10.1.1.1|Ethernet0': {'distance': '10'},
+            },
+        })
+
+    def dangling_interface_rules(self):
+        from utilities_common.dangling_interface_references import INTERFACE_REFERENCES, InterfaceRule
+        nexthop = next(spec for spec in INTERFACE_REFERENCES if spec.table == 'STATIC_ROUTE_NEXTHOP')
+        return {nexthop: InterfaceRule((), ('PORT',), 1)}
+
+    def test_static_route_nexthop_on_a_missing_interface_is_quarantined(self, tmp_path):
+        path = self.dangling_interface_config(tmp_path)
+        sy = fake_sonic_yang({'PORT': {'lanes'}, 'STATIC_ROUTE': {'advertise'}, 'STATIC_ROUTE_NEXTHOP': {'distance'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.interface_reference_rules', return_value=self.dangling_interface_rules()), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            with mock.patch('config.main.click.secho') as secho:
+                quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        printed = [c.args[0] for c in secho.call_args_list]
+        assert "{}: STATIC_ROUTE_NEXTHOP|default|10.0.0.0/24|10.1.1.1|Ethernet8 dropped: ifname Ethernet8 is in " \
+               "none of PORT".format(path) in printed
+        assert "{}: STATIC_ROUTE|default|10.0.0.0/24 dropped: its last nexthop was dropped".format(path) in printed
+        assert quarantine == {
+            'STATIC_ROUTE': {'default|10.0.0.0/24': {'advertise': 'false'}},
+            'STATIC_ROUTE_NEXTHOP': {'default|10.0.0.0/24|10.1.1.1|Ethernet8': {'distance': '10'},
+                                     'default|10.0.1.0/24|10.1.1.1|Ethernet8': {'distance': '10'}},
+        }
+        with open(path) as f:
+            saved = json.load(f)
+        assert saved['STATIC_ROUTE'] == {'default|10.0.1.0/24': {}}
+        assert saved['STATIC_ROUTE_NEXTHOP'] == {'default|10.0.1.0/24|10.1.1.1|Ethernet0': {'distance': '10'}}
+        with open(path + config.CONFIG_DB_QUARANTINE_SUFFIX) as f:
+            assert json.load(f) == quarantine
+
+    def test_leaf_list_element_on_a_missing_interface_is_quarantined(self, tmp_path):
+        from utilities_common.dangling_interface_references import INTERFACE_REFERENCES, InterfaceRule
+        downlinks = next(spec for spec in INTERFACE_REFERENCES if spec.leaf == 'downlinks')
+        path = self.write_config(tmp_path, {
+            'PORT': {'Ethernet0': {'lanes': '0'}},
+            'MONITOR_LINK_GROUP': {'g1': {'uplinks': ['Ethernet0'], 'downlinks': ['Ethernet0', 'Ethernet8']}},
+        })
+        sy = fake_sonic_yang({'PORT': {'lanes'}, 'MONITOR_LINK_GROUP': {'uplinks', 'downlinks'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.interface_reference_rules',
+                           return_value={downlinks: InterfaceRule((), ('PORT', 'PORTCHANNEL'), 0)}), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            with mock.patch('config.main.click.secho') as secho:
+                quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        printed = [c.args[0] for c in secho.call_args_list]
+        assert "{}: MONITOR_LINK_GROUP|g1 downlinks Ethernet8 dropped: in none of PORT, PORTCHANNEL".format(path) \
+            in printed
+        # The original list, so merging the quarantine back restores it.
+        assert quarantine == {'MONITOR_LINK_GROUP': {'g1': {'downlinks': ['Ethernet0', 'Ethernet8']}}}
+        with open(path) as f:
+            assert json.load(f)['MONITOR_LINK_GROUP'] == {'g1': {'uplinks': ['Ethernet0'], 'downlinks': ['Ethernet0']}}
+
+    def test_static_route_nexthops_are_kept_when_the_models_reference_no_table(self, tmp_path):
+        path = self.dangling_interface_config(tmp_path)
+        sy = fake_sonic_yang({'PORT': {'lanes'}, 'STATIC_ROUTE': {'advertise'}, 'STATIC_ROUTE_NEXTHOP': {'distance'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.interface_reference_rules', return_value={}), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        assert quarantine == {}
+        with open(path) as f:
+            assert len(json.load(f)['STATIC_ROUTE_NEXTHOP']) == 3
+
+    def test_unreadable_interface_rules_leave_the_file_untouched(self, tmp_path):
+        path = self.dangling_interface_config(tmp_path)
+        with open(path) as f:
+            original = json.load(f)
+        sy = fake_sonic_yang({'PORT': {'lanes'}, 'STATIC_ROUTE': {'advertise'}, 'STATIC_ROUTE_NEXTHOP': {'distance'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.interface_reference_rules',
+                           side_effect=AttributeError("no union_member_types")), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)), \
+                mock.patch('config.main.log.log_warning') as log_warning:
+            assert config.reconcile_config_file_with_yang_models(path) == {}
+
+        with open(path) as f:
+            assert json.load(f) == original
+        assert not os.path.exists(path + config.CONFIG_DB_QUARANTINE_SUFFIX)
+        log_warning.assert_called_once_with(
+            "config reload: could not reconcile {} against YANG models: no union_member_types".format(path))
+
+    def test_evpn_nvo_beside_a_vnet_is_pinned_to_per_vni(self, tmp_path):
+        path = self.write_config(tmp_path, {
+            'VXLAN_TUNNEL': {'vtep1': {'src_ip': '10.0.0.1'}},
+            'VXLAN_TUNNEL_MAP': {'vtep1|map_1000_Vlan100': {'vlan': 'Vlan100', 'vni': '1000'}},
+            'VXLAN_EVPN_NVO': {'nvo1': {'source_vtep': 'vtep1'}},
+            'VNET': {'Vnet1': {'vxlan_tunnel': 'vtep1', 'vni': '2000'}},
+        })
+        sy = fake_sonic_yang({'VXLAN_TUNNEL': {'src_ip'},
+                              'VXLAN_TUNNEL_MAP': {'vlan', 'vni'},
+                              'VXLAN_EVPN_NVO': {'source_vtep', 'kernel_mode'},
+                              'VNET': {'vxlan_tunnel', 'vni'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            with mock.patch('config.main.click.secho') as secho:
+                quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        printed = [c.args[0] for c in secho.call_args_list]
+        assert printed == ["{}: VXLAN_EVPN_NVO|nvo1 kernel_mode set to per_vni because the switch "
+                           "has a VNET".format(path)]
+        # Nothing was dropped, so there is no quarantine file.
+        assert quarantine == {}
+        assert not os.path.exists(path + config.CONFIG_DB_QUARANTINE_SUFFIX)
+        with open(path) as f:
+            assert json.load(f)['VXLAN_EVPN_NVO'] == {
+                'nvo1': {'source_vtep': 'vtep1', 'kernel_mode': 'per_vni'}}
+
+    def test_evpn_nvo_is_not_pinned_by_models_without_kernel_mode(self, tmp_path):
+        nvo_config = {
+            'VXLAN_TUNNEL': {'vtep1': {'src_ip': '10.0.0.1', 'dst_ip': '10.0.0.2'}},
+            'VXLAN_EVPN_NVO': {'nvo1': {'source_vtep': 'vtep1'}},
+        }
+        path = self.write_config(tmp_path, nvo_config)
+        sy = fake_sonic_yang({'VXLAN_TUNNEL': {'src_ip', 'dst_ip'},
+                              'VXLAN_EVPN_NVO': {'source_vtep'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            with mock.patch('config.main.click.secho') as secho:
+                quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        secho.assert_not_called()
+        assert quarantine == {}
+        with open(path) as f:
+            assert json.load(f) == nvo_config
+
+    def test_evpn_nvo_pin_and_a_drop_share_one_rewrite(self, tmp_path):
+        path = self.write_config(tmp_path, {
+            'VXLAN_TUNNEL': {'vtep1': {'src_ip': '10.0.0.1', 'dst_ip': '10.0.0.2'}},
+            'VXLAN_EVPN_NVO': {'nvo1': {'source_vtep': 'vtep1'}},
+            'LINK_DEBOUNCE': {'Ethernet0': {'link_down_delay': '5000'}},
+        })
+        sy = fake_sonic_yang({'VXLAN_TUNNEL': {'src_ip', 'dst_ip'},
+                              'VXLAN_EVPN_NVO': {'source_vtep', 'kernel_mode'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        assert quarantine == {'LINK_DEBOUNCE': {'Ethernet0': {'link_down_delay': '5000'}}}
+        with open(path) as f:
+            assert json.load(f) == {
+                'VXLAN_TUNNEL': {'vtep1': {'src_ip': '10.0.0.1', 'dst_ip': '10.0.0.2'}},
+                'VXLAN_EVPN_NVO': {'nvo1': {'source_vtep': 'vtep1', 'kernel_mode': 'per_vni'}},
+            }
+        with open(path + config.CONFIG_DB_QUARANTINE_SUFFIX) as f:
+            assert json.load(f) == quarantine
+
+    def test_file_matching_the_models_is_left_alone(self, tmp_path):
+        original = {'DEVICE_METADATA': {'localhost': {'hostname': 'humm169'}}}
+        path = self.write_config(tmp_path, original)
+        sy = fake_sonic_yang({'DEVICE_METADATA': {'hostname'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=False), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            assert config.reconcile_config_file_with_yang_models(path) == {}
+
+        with open(path) as f:
+            assert json.load(f) == original
+        assert not os.path.exists(path + config.CONFIG_DB_QUARANTINE_SUFFIX)
+
+    def test_multi_asic_file_is_quarantined_per_scope(self, tmp_path):
+        path = self.write_config(tmp_path, {
+            'localhost': {'DEVICE_METADATA': {'localhost': {'hostname': 'humm169'}}},
+            'asic0': {'DEVICE_METADATA': {
+                'localhost': {'hostname': 'humm169-asic0',
+                              'orch_southbound_zmq_enabled': 'true'}}},
+        })
+        sy = fake_sonic_yang({'DEVICE_METADATA': {'hostname'}})
+
+        with mock.patch('config.main.sonic_yang.SonicYang', return_value=sy), \
+                mock.patch('config.main.multi_asic.is_multi_asic', return_value=True), \
+                mock.patch('config.main.yang_model_field_names',
+                           side_effect=lambda c: set(c)):
+            quarantine = config.reconcile_config_file_with_yang_models(path)
+
+        # Only asic0 had anything to drop, so only asic0 gets a scope entry and
+        # the result stays namespace keyed rather than collapsing to tables.
+        assert quarantine == {'asic0': {'DEVICE_METADATA': {
+            'localhost': {'orch_southbound_zmq_enabled': 'true'}}}}
+        with open(path) as f:
+            assert json.load(f) == {
+                'localhost': {'DEVICE_METADATA': {'localhost': {'hostname': 'humm169'}}},
+                'asic0': {'DEVICE_METADATA': {'localhost': {'hostname': 'humm169-asic0'}}},
+            }
+
+    def test_fails_open_and_leaves_the_file_untouched(self, tmp_path):
+        original = {'DEVICE_METADATA': {'localhost': {'hostname': 'humm169'}}}
+        path = self.write_config(tmp_path, original)
+
+        with mock.patch('config.main.sonic_yang.SonicYang',
+                        side_effect=Exception("no yang models")):
+            assert config.reconcile_config_file_with_yang_models(path) == {}
+
+        with open(path) as f:
+            assert json.load(f) == original
+        assert not os.path.exists(path + config.CONFIG_DB_QUARANTINE_SUFFIX)
+
+>>>>>>> 3632a3ba (NOS-23414: [db_migrator] Repair references to interfaces that no longer exist (#1465))
 
 class TestRestartServicesMonitOrdering(object):
     """Regression test for sonic-net/sonic-utilities#4774.
