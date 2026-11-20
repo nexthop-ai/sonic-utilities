@@ -435,6 +435,44 @@ def remove_empty_leaf_lists(config):
     return config
 
 
+def leaf_list_split_warning(location, item):
+    """The warning telling the operator that *item* at *location* is stored as
+    several leaf-list items."""
+    return (f"{location}: item '{item}' is stored as {len(item.split(','))} items. "
+            f"ConfigDB cannot store a comma inside a leaf-list item.")
+
+
+def canonicalize_leaf_lists(config):
+    """Split any leaf-list item containing a comma into separate items and drop
+    empty leaf-lists, in place.
+
+    Expects ConfigDB shaped json, i.e. table -> key -> field, like
+    remove_empty_leaf_lists. A comma is not a representable character inside a
+    ConfigDB leaf-list item (swsscommon ConfigDBConnector.typed_to_raw /
+    raw_to_typed), so ["A,B"] and ["A", "B"] are the same stored value. Returns
+    a warning per split item for the caller to log, so the operator learns
+    their item changed shape.
+    """
+    warnings = []
+    for table, entries in config.items():
+        if not isinstance(entries, dict):
+            continue
+        for key, fields in entries.items():
+            if not isinstance(fields, dict):
+                continue
+            for field, value in fields.items():
+                if not isinstance(value, list):
+                    continue
+                split_items = [item for item in value if isinstance(item, str) and "," in item]
+                if not split_items:
+                    continue
+                fields[field] = [piece for item in value
+                                 for piece in (item.split(",") if isinstance(item, str) else [item])]
+                warnings.extend(leaf_list_split_warning(f"{table}|{key} {field}", item) for item in split_items)
+    remove_empty_leaf_lists(config)
+    return warnings
+
+
 class PatchWrapper:
     def __init__(self, config_wrapper=None, scope=multi_asic.DEFAULT_NAMESPACE):
         self.scope = scope
@@ -468,14 +506,22 @@ class PatchWrapper:
     def simulate_patch(self, patch, jsonconfig):
         return patch.apply(jsonconfig)
 
-    def simulate_config_db_patch(self, patch, config_db):
+    def simulate_config_db_patch(self, patch, config_db, warn=False):
         """Simulate a patch against ConfigDB shaped json.
 
         Use this instead of simulate_patch whenever the result is meant to be a
-        ConfigDB target, so that empty leaf-lists are normalized to absent
-        fields, which is the only way ConfigDB can express them.
+        ConfigDB target, so that leaf-lists take the shape ConfigDB can store:
+        items containing commas are split and empty leaf-lists become absent
+        fields. With warn, each split item is logged under this wrapper's scope.
         """
-        return remove_empty_leaf_lists(self.simulate_patch(patch, config_db))
+        target_config = self.simulate_patch(patch, config_db)
+        split_warnings = canonicalize_leaf_lists(target_config)
+        if warn and split_warnings:
+            scope = self.scope if self.scope else HOST_NAMESPACE
+            logger = genericUpdaterLogging.get_logger(title="Leaf-list canonicalization", print_all_to_console=True)
+            for warning in split_warnings:
+                logger.log_warning(f"{scope}: {warning}")
+        return target_config
 
     def convert_config_db_patch_to_sonic_yang_patch(self, patch):
         if not(self.validate_config_db_patch_has_yang_models(patch)):

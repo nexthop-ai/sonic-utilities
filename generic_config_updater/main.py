@@ -36,6 +36,14 @@ from generic_config_updater.generic_updater import (
 from generic_config_updater.gu_common import (
     HOST_NAMESPACE,
     GenericConfigUpdaterError,
+<<<<<<< HEAD
+=======
+    canonicalize_leaf_lists,
+    genericUpdaterLogging,
+    leaf_list_split_warning,
+    redact_error_for_log,
+    redact_for_log,
+>>>>>>> e386ae88 (NOS-15351: [gcu] canonicalize leaf-lists before verifying the applied config (#1245))
 )
 from sonic_py_common import multi_asic
 from utilities_common.general import load_db_config
@@ -89,55 +97,78 @@ def get_all_running_config():
 # Patch pre-processing helpers
 # ---------------------------------------------------------------------------
 
+def _warn_split_items(split_warnings):
+    if not split_warnings:
+        return
+    gcu_logger = genericUpdaterLogging.get_logger(title="Patch preflight", print_all_to_console=True)
+    for warning in split_warnings:
+        gcu_logger.log_warning(warning)
+
+
+def _simulate_target_config(patch_ops, all_running_config):
+    """Apply *patch_ops* to a copy of the running config. Returns the target in
+    the shape ConfigDB will store it, per scope on multi-ASIC, and a warning
+    per split leaf-list item."""
+    config = (
+        json.loads(all_running_config)
+        if isinstance(all_running_config, str)
+        else all_running_config
+    )
+    patch_copy = jsonpatch.JsonPatch([copy.deepcopy(op) for op in patch_ops])
+    all_target_config = patch_copy.apply(config)
+    if not multi_asic.is_multi_asic():
+        return all_target_config, canonicalize_leaf_lists(all_target_config)
+    split_warnings = []
+    for scope, scope_config in all_target_config.items():
+        if isinstance(scope_config, dict):
+            split_warnings += [f"{scope}: {warning}" for warning in canonicalize_leaf_lists(scope_config)]
+    return all_target_config, split_warnings
+
+
+def _leaf_list_items(value):
+    """The items a leaf-list ``add`` value becomes once stored."""
+    return value.split(",") if isinstance(value, str) else [value]
+
+
 def filter_duplicate_patch_operations(patch_ops, all_running_config):
-    """Remove leaf-list ``add`` ops that would create duplicate entries."""
+    """Drop from leaf-list ``add`` ops the items their list already holds.
+
+    The ops are walked in order, so the first one to add an item keeps it and
+    later repeats lose it. An op left with no new item is removed. A value
+    containing commas is stored as several items; it becomes one add per new
+    item, and the split is logged.
+    """
     if not any(op.get("path", "").endswith("/-") for op in patch_ops):
         return patch_ops
 
     config = (
         json.loads(all_running_config)
         if isinstance(all_running_config, str)
-        else all_running_config
+        else copy.deepcopy(all_running_config)
     )
 
-    patch_copy = jsonpatch.JsonPatch([copy.deepcopy(op) for op in patch_ops])
-    all_target_config = patch_copy.apply(config)
+    filtered_ops = []
+    for op in patch_ops:
+        ops = [op]
+        if op.get("op") == "add" and op.get("path", "").endswith("/-"):
+            current = jsonpointer.JsonPointer(op["path"][:-2]).resolve(config, None)
+            if isinstance(current, list):
+                held = [piece for item in current for piece in _leaf_list_items(item)]
+                items = _leaf_list_items(op.get("value"))
+                new_items = []
+                for item in items:
+                    if item not in held and item not in new_items:
+                        new_items.append(item)
+                if len(items) > 1:
+                    _warn_split_items([leaf_list_split_warning(op["path"][:-2], op["value"])])
+                    ops = [dict(op, value=item) for item in new_items]
+                elif not new_items:
+                    ops = []
+        for op in ops:
+            filtered_ops.append(op)
+            jsonpatch.JsonPatch([copy.deepcopy(op)]).apply(config, in_place=True)
 
-    def _find_duplicate_entries(cfg):
-        duplicates = {}
-
-        def _check(obj, path=""):
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    _check(v, f"{path}/{k}" if path else f"/{k}")
-            elif isinstance(obj, list):
-                seen, dups = set(), set()
-                for item in obj:
-                    (dups if item in seen else seen).add(item)
-                if dups:
-                    duplicates[path] = list(dups)
-                for idx, item in enumerate(obj):
-                    _check(item, f"{path}[{idx}]")
-
-        _check(cfg)
-        return duplicates
-
-    dups = _find_duplicate_entries(all_target_config)
-    if not dups:
-        return patch_ops
-
-    ops_to_remove = set()
-    for list_path, dup_values in dups.items():
-        for op_idx, op in enumerate(patch_ops):
-            if (
-                op.get("op") == "add"
-                and op.get("path", "").endswith("/-")
-                and op.get("path").startswith(list_path)
-                and op.get("value") in dup_values
-            ):
-                ops_to_remove.add(op_idx)
-
-    return [op for idx, op in enumerate(patch_ops) if idx not in ops_to_remove]
+    return filtered_ops
 
 
 def append_emptytables_if_required(patch_ops, all_running_config):
@@ -209,6 +240,7 @@ def validate_patch(patch_ops, all_running_config):
         return True
 
     try:
+<<<<<<< HEAD
         config = (
             json.loads(all_running_config)
             if isinstance(all_running_config, str)
@@ -218,6 +250,10 @@ def validate_patch(patch_ops, all_running_config):
             [copy.deepcopy(op) for op in patch_ops]
         )
         all_target_config = patch_copy.apply(config)
+=======
+        all_target_config, split_warnings = _simulate_target_config(patch_ops, all_running_config)
+        ConfigWrapper.remove_null_values(all_target_config)
+>>>>>>> e386ae88 (NOS-15351: [gcu] canonicalize leaf-lists before verifying the applied config (#1245))
 
         target_config = (
             all_target_config.pop(HOST_NAMESPACE)
@@ -225,21 +261,22 @@ def validate_patch(patch_ops, all_running_config):
             else all_target_config
         )
         target_config.pop("bgpraw", None)
-        if not SonicYangCfgDbGenerator().validate_config_db_json(
-            target_config
-        ):
-            return False
+        valid = SonicYangCfgDbGenerator().validate_config_db_json(target_config)
 
-        if multi_asic.is_multi_asic():
+        if valid and multi_asic.is_multi_asic():
             for asic in multi_asic.get_namespace_list():
                 target_config = all_target_config.pop(asic)
                 target_config.pop("bgpraw", None)
                 if not SonicYangCfgDbGenerator().validate_config_db_json(
                     target_config
                 ):
-                    return False
+                    valid = False
+                    break
 
-        return True
+        if not valid:
+            # The YANG errors name the split items, not what the operator wrote.
+            _warn_split_items(split_warnings)
+        return valid
     except Exception as e:
         raise GenericConfigUpdaterError(
             f"Validate json patch: {patch_ops} failed due to: {e}"

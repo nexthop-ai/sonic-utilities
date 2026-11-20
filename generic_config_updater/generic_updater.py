@@ -8,7 +8,13 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import IO, Optional
 from .gu_common import HOST_NAMESPACE, GenericConfigUpdaterError, EmptyTableError, ConfigWrapper, \
+<<<<<<< HEAD
                     DryRunConfigWrapper, JsonChange, PatchWrapper, genericUpdaterLogging
+=======
+                    DryRunConfigWrapper, FieldCustomValidations, JsonChange, PatchWrapper, \
+                    canonicalize_leaf_lists, genericUpdaterLogging, ops_without_values, \
+                    redact_error_for_log, redact_for_log
+>>>>>>> e386ae88 (NOS-15351: [gcu] canonicalize leaf-lists before verifying the applied config (#1245))
 from .patch_sorter import StrictPatchSorter, NonStrictPatchSorter, ConfigSplitter, \
                         TablesWithoutYangConfigSplitter, IgnorePathsFromYangConfigSplitter
 from .change_applier import ChangeApplier, DryRunChangeApplier
@@ -114,7 +120,7 @@ class PatchApplier:
 
         # Generate target config
         self.logger.log_notice(f"{scope}: simulating the target full config after applying the patch.")
-        target_config = self.patch_wrapper.simulate_config_db_patch(patch, old_config)
+        target_config = self.patch_wrapper.simulate_config_db_patch(patch, old_config, warn=True)
 
         # Validate all JsonPatch operations on specified fields
         self.logger.log_notice(f"{scope}: validating all JsonPatch operations are permitted on the specified fields")
@@ -171,6 +177,20 @@ class ConfigReplacer:
     def replace(self, target_config, trace_io: Optional[IO] = None):
         self.logger.log_notice("Config replacement starting.")
         self.logger.log_notice(f"Target config length: {len(json.dumps(target_config))}.")
+<<<<<<< HEAD
+=======
+        null_paths = self.config_wrapper.remove_null_values(target_config)
+        if null_paths:
+            self.logger.log_notice(f"Deleting the null values at {', '.join(null_paths)}")
+        for warning in canonicalize_leaf_lists(target_config):
+            self.logger.log_warning(warning)
+
+        # Only the host CONFIG_DB carries master-key encrypted fields. A target
+        # that fails the digest check is decided on once its patch is known.
+        mismatch = None
+        if self.scope == multi_asic.DEFAULT_NAMESPACE:
+            target_config, mismatch = master_key_check.check_config_for_replace(target_config, "target config")
+>>>>>>> e386ae88 (NOS-15351: [gcu] canonicalize leaf-lists before verifying the applied config (#1245))
 
         self.logger.log_notice("Getting current config db.")
         old_config = self.config_wrapper.get_config_db_as_json()

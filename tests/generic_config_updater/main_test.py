@@ -136,6 +136,88 @@ class TestFilterDuplicatePatchOperations(unittest.TestCase):
         result = gcu_main.filter_duplicate_patch_operations(patch_ops, config)
         self.assertEqual(len(result), 0)
 
+    def test_comma_item_whose_pieces_all_exist_is_a_duplicate(self):
+        # "Eth0,Eth1" is stored as the two items Eth0 and Eth1, both already present
+        config = {"ACL_TABLE": {"MY_ACL": {"ports": ["Eth0", "Eth1"]}}}
+        patch_ops = [
+            {"op": "add", "path": "/ACL_TABLE/MY_ACL/ports/-", "value": "Eth0,Eth1"},
+            {"op": "add", "path": "/ACL_TABLE/MY_ACL/ports/-", "value": "Eth2"},
+        ]
+        with mock.patch('sonic_py_common.multi_asic.is_multi_asic', return_value=False):
+            result = gcu_main.filter_duplicate_patch_operations(patch_ops, config)
+        self.assertEqual([op["value"] for op in result], ["Eth2"])
+
+    def test_comma_item_with_a_new_piece_keeps_only_the_new_piece(self):
+        config = {"ACL_TABLE": {"MY_ACL": {"ports": ["Eth0"]}}}
+        patch_ops = [
+            {"op": "add", "path": "/ACL_TABLE/MY_ACL/ports/-", "value": "Eth0,Eth1"},
+        ]
+        result = gcu_main.filter_duplicate_patch_operations(patch_ops, config)
+        self.assertEqual(result, [{"op": "add", "path": "/ACL_TABLE/MY_ACL/ports/-", "value": "Eth1"}])
+        # The caller's op is left as it was
+        self.assertEqual(patch_ops[0]["value"], "Eth0,Eth1")
+
+    def test_comma_items_overlapping_each_other_keep_the_first(self):
+        config = {"ACL_TABLE": {"MY_ACL": {"ports": []}}}
+        patch_ops = [
+            {"op": "add", "path": "/ACL_TABLE/MY_ACL/ports/-", "value": "Eth0,Eth4"},
+            {"op": "add", "path": "/ACL_TABLE/MY_ACL/ports/-", "value": "Eth4,Eth0"},
+        ]
+        result = gcu_main.filter_duplicate_patch_operations(patch_ops, config)
+        # The first op's pieces are added one by one, so no comma reaches the engine
+        self.assertEqual([op["value"] for op in result], ["Eth0", "Eth4"])
+
+    def test_same_value_added_twice_keeps_the_first(self):
+        config = {"ACL_TABLE": {"MY_ACL": {"ports": []}}}
+        patch_ops = [
+            {"op": "add", "path": "/ACL_TABLE/MY_ACL/ports/-", "value": "Eth0"},
+            {"op": "add", "path": "/ACL_TABLE/MY_ACL/ports/-", "value": "Eth0"},
+        ]
+        result = gcu_main.filter_duplicate_patch_operations(patch_ops, config)
+        self.assertEqual(result, patch_ops[:1])
+
+    def test_list_created_by_an_earlier_op_counts_as_held(self):
+        config = {"ACL_TABLE": {}}
+        patch_ops = [
+            {"op": "add", "path": "/ACL_TABLE/MY_ACL", "value": {"ports": ["Eth0,Eth4"]}},
+            {"op": "add", "path": "/ACL_TABLE/MY_ACL/ports/-", "value": "Eth4"},
+            {"op": "add", "path": "/ACL_TABLE/MY_ACL/ports/-", "value": "Eth8"},
+        ]
+        result = gcu_main.filter_duplicate_patch_operations(patch_ops, json.dumps(config))
+        self.assertEqual(result, [patch_ops[0], patch_ops[2]])
+
+    def test_scoped_path_is_filtered_per_asic(self):
+        config = {"localhost": {}, "asic0": {"ACL_TABLE": {"T": {"ports": ["Eth0"]}}},
+                  "asic1": {"ACL_TABLE": {"T": {"ports": []}}}}
+        patch_ops = [
+            {"op": "add", "path": "/asic0/ACL_TABLE/T/ports/-", "value": "Eth0"},
+            {"op": "add", "path": "/asic1/ACL_TABLE/T/ports/-", "value": "Eth0"},
+        ]
+        result = gcu_main.filter_duplicate_patch_operations(patch_ops, config)
+        self.assertEqual(result, patch_ops[1:])
+
+    def test_comma_add_is_warned_once_with_the_value_the_operator_wrote(self):
+        # Trimmed to one piece, the add no longer shows the engine a comma, so the
+        # filter is the only place that can tell the operator their item was split.
+        config = {"asic0": {"ACL_TABLE": {"MY_ACL": {"ports": ["Eth0"]}}}}
+        patch_ops = [{"op": "add", "path": "/asic0/ACL_TABLE/MY_ACL/ports/-", "value": "Eth0,Eth1"}]
+        logger = mock.Mock()
+        with mock.patch('generic_config_updater.gu_common.genericUpdaterLogging.get_logger', return_value=logger):
+            result = gcu_main.filter_duplicate_patch_operations(patch_ops, config)
+        self.assertEqual([op["value"] for op in result], ["Eth1"])
+        logger.log_warning.assert_called_once()
+        self.assertIn("/asic0/ACL_TABLE/MY_ACL/ports: item 'Eth0,Eth1' is stored as 2 items",
+                      logger.log_warning.call_args[0][0])
+
+    def test_plain_adds_are_not_logged(self):
+        config = {"ACL_TABLE": {"MY_ACL": {"ports": ["Eth0"]}}}
+        patch_ops = [{"op": "add", "path": "/ACL_TABLE/MY_ACL/ports/-", "value": "Eth0"},
+                     {"op": "add", "path": "/ACL_TABLE/MY_ACL/ports/-", "value": "Eth4"}]
+        logger = mock.Mock()
+        with mock.patch('generic_config_updater.gu_common.genericUpdaterLogging.get_logger', return_value=logger):
+            gcu_main.filter_duplicate_patch_operations(patch_ops, config)
+        logger.log_warning.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # append_emptytables_if_required
@@ -232,6 +314,104 @@ class TestValidatePatch(unittest.TestCase):
             with mock.patch('sonic_py_common.multi_asic.is_multi_asic', return_value=False):
                 result = gcu_main.validate_patch([], json.dumps({}))
         self.assertFalse(result)
+
+    def test_validates_the_target_in_configdb_shape(self):
+        # The YANG preflight must see what ConfigDB will store: comma items split,
+        # empty leaf-lists absent. Otherwise apply-patch and replace disagree.
+        mock_generator = mock.Mock()
+        mock_generator.validate_config_db_json.return_value = True
+        mock_module = mock.Mock()
+        mock_module.SonicYangCfgDbGenerator.return_value = mock_generator
+        config = {"ACL_TABLE": {"MY_ACL": {"ports": ["Ethernet0"], "services": ["SSH"]}}}
+        patch_ops = [
+            {"op": "add", "path": "/ACL_TABLE/MY_ACL/ports/-", "value": "Ethernet4,Ethernet8"},
+            {"op": "remove", "path": "/ACL_TABLE/MY_ACL/services/0"},
+        ]
+
+        with mock.patch.dict('sys.modules', {'sonic_yang_cfg_generator': mock_module}):
+            with mock.patch('sonic_py_common.multi_asic.is_multi_asic', return_value=False):
+                result = gcu_main.validate_patch(patch_ops, json.dumps(config))
+
+        self.assertTrue(result)
+        validated = mock_generator.validate_config_db_json.call_args[0][0]
+        self.assertEqual({"ACL_TABLE": {"MY_ACL": {"ports": ["Ethernet0", "Ethernet4", "Ethernet8"]}}}, validated)
+
+    def test_preflight_does_not_log_split_items(self):
+        # The engine reports each split item when it applies; the preflight must not repeat it.
+        mock_generator = mock.Mock()
+        mock_generator.validate_config_db_json.return_value = True
+        mock_module = mock.Mock()
+        mock_module.SonicYangCfgDbGenerator.return_value = mock_generator
+        config = {"ACL_TABLE": {"MY_ACL": {"ports": ["Ethernet0"]}}}
+        patch_ops = [{"op": "add", "path": "/ACL_TABLE/MY_ACL/ports/-", "value": "Ethernet4,Ethernet8"}]
+        logger = mock.Mock()
+
+        with mock.patch.dict('sys.modules', {'sonic_yang_cfg_generator': mock_module}):
+            with mock.patch('sonic_py_common.multi_asic.is_multi_asic', return_value=False):
+                with mock.patch('generic_config_updater.gu_common.genericUpdaterLogging.get_logger',
+                                return_value=logger):
+                    self.assertTrue(gcu_main.validate_patch(patch_ops, json.dumps(config)))
+
+        logger.log_warning.assert_not_called()
+
+    def test_failed_preflight_reports_the_split_items(self):
+        # The YANG error names the pieces, so the operator is told where they came from.
+        mock_generator = mock.Mock()
+        mock_generator.validate_config_db_json.return_value = False
+        mock_module = mock.Mock()
+        mock_module.SonicYangCfgDbGenerator.return_value = mock_generator
+        config = {"ACL_TABLE": {"MY_ACL": {"ports": ["Ethernet0"]}}}
+        patch_ops = [{"op": "replace", "path": "/ACL_TABLE/MY_ACL/ports", "value": ["Ethernet0,Ethernet999"]}]
+        logger = mock.Mock()
+
+        with mock.patch.dict('sys.modules', {'sonic_yang_cfg_generator': mock_module}):
+            with mock.patch('sonic_py_common.multi_asic.is_multi_asic', return_value=False):
+                with mock.patch('generic_config_updater.gu_common.genericUpdaterLogging.get_logger',
+                                return_value=logger):
+                    self.assertFalse(gcu_main.validate_patch(patch_ops, json.dumps(config)))
+
+        logger.log_warning.assert_called_once()
+        self.assertIn("ACL_TABLE|MY_ACL ports: item 'Ethernet0,Ethernet999'", logger.log_warning.call_args[0][0])
+
+    def test_multiasic_failed_preflight_names_the_scope_of_each_split_item(self):
+        mock_generator = mock.Mock()
+        mock_generator.validate_config_db_json.side_effect = [True, False]
+        mock_module = mock.Mock()
+        mock_module.SonicYangCfgDbGenerator.return_value = mock_generator
+        config = {"localhost": {}, "asic0": {"ACL_TABLE": {"T": {"ports": ["Ethernet0"]}}}}
+        patch_ops = [{"op": "replace", "path": "/asic0/ACL_TABLE/T/ports", "value": ["Ethernet0,Ethernet999"]}]
+        logger = mock.Mock()
+
+        with mock.patch.dict('sys.modules', {'sonic_yang_cfg_generator': mock_module}):
+            with mock.patch('sonic_py_common.multi_asic.is_multi_asic', return_value=True):
+                with mock.patch('sonic_py_common.multi_asic.get_namespace_list', return_value=['asic0']):
+                    with mock.patch('generic_config_updater.gu_common.genericUpdaterLogging.get_logger',
+                                    return_value=logger):
+                        self.assertFalse(gcu_main.validate_patch(patch_ops, json.dumps(config)))
+
+        logger.log_warning.assert_called_once()
+        self.assertTrue(logger.log_warning.call_args[0][0].startswith("asic0: ACL_TABLE|T ports: "))
+
+    def test_multiasic_validates_each_scope_in_configdb_shape(self):
+        mock_generator = mock.Mock()
+        mock_generator.validate_config_db_json.return_value = True
+        mock_module = mock.Mock()
+        mock_module.SonicYangCfgDbGenerator.return_value = mock_generator
+        config = {"localhost": {"ACL_TABLE": {"T": {"ports": ["Ethernet0"]}}},
+                  "asic0": {"ACL_TABLE": {"T": {"ports": ["Ethernet0"], "services": ["SSH"]}}}}
+        patch_ops = [
+            {"op": "add", "path": "/asic0/ACL_TABLE/T/ports/-", "value": "Ethernet4,Ethernet8"},
+            {"op": "remove", "path": "/asic0/ACL_TABLE/T/services/0"},
+        ]
+
+        with mock.patch.dict('sys.modules', {'sonic_yang_cfg_generator': mock_module}):
+            with mock.patch('sonic_py_common.multi_asic.is_multi_asic', return_value=True):
+                with mock.patch('sonic_py_common.multi_asic.get_namespace_list', return_value=['asic0']):
+                    self.assertTrue(gcu_main.validate_patch(patch_ops, json.dumps(config)))
+
+        validated = [c[0][0] for c in mock_generator.validate_config_db_json.call_args_list]
+        self.assertEqual([{"ACL_TABLE": {"T": {"ports": ["Ethernet0"]}}},
+                          {"ACL_TABLE": {"T": {"ports": ["Ethernet0", "Ethernet4", "Ethernet8"]}}}], validated)
 
     def test_raises_on_unexpected_exception(self):
         mock_module = mock.Mock()

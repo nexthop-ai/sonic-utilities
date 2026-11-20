@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import shutil
@@ -30,6 +31,65 @@ class TestPatchApplier(unittest.TestCase):
         # Act and assert
         self.assertRaises(gu.GenericConfigUpdaterError, patch_applier.apply, Files.MULTI_OPERATION_CONFIG_DB_PATCH)
 
+    def test_apply__leaf_list_item_with_comma__readback_in_split_form_verifies(self):
+        # The case NOS-15351 reports, run through a real PatchWrapper: the patch
+        # carries one item containing a comma, ConfigDB reads it back as two items.
+        # Arrange
+        old_config = {"COMMUNITY_SET": {"cs": {"set_type": "STANDARD"}}}
+        readback = {"COMMUNITY_SET": {"cs": {"set_type": "STANDARD",
+                                             "community_member": ["65000:1", "65000:2"]}}}
+        patch = jsonpatch.JsonPatch(
+            [{"op": "add", "path": "/COMMUNITY_SET/cs/community_member", "value": ["65000:1,65000:2"]}])
+        config_wrapper = Mock()
+        config_wrapper.get_config_db_as_json.side_effect = [old_config, readback]
+        config_wrapper.get_empty_tables.return_value = []
+        config_wrapper.remove_null_values.return_value = []
+        patch_wrapper = gu_common.PatchWrapper(config_wrapper=config_wrapper)
+        patchsorter = Mock()
+        patchsorter.sort.return_value = [Mock()]
+        changeapplier = Mock()
+        patch_applier = gu.PatchApplier(patchsorter, changeapplier, config_wrapper, patch_wrapper)
+        patch_applier.logger = Mock()
+
+        # Act: must not raise "parts not updated"
+        patch_applier.apply(patch)
+
+        # Assert: the sorter was given the patch and the applier ran once
+        patchsorter.sort.assert_called_once()
+        changeapplier.apply.assert_called_once()
+
+    def test_apply__leaf_list_item_with_comma__each_split_item_warned_once(self):
+        # Real wrapper and sorter: the sorters simulate the same raw patch again
+        # and must not repeat the warning.
+        # Arrange
+        state = {"config": copy.deepcopy(Files.CONFIG_DB_AS_JSON)}
+        config_wrapper = gu_common.ConfigWrapper()
+        config_wrapper.get_config_db_as_json = MagicMock(side_effect=lambda: copy.deepcopy(state["config"]))
+        patch_wrapper = gu_common.PatchWrapper(config_wrapper)
+
+        def apply_change(_current_config, change, **_kwargs):
+            state["config"] = change.apply(state["config"])
+            return state["config"]
+
+        changeapplier = Mock()
+        changeapplier.apply.side_effect = apply_change
+        logger = Mock()
+        comma_patch = jsonpatch.JsonPatch(
+            [{"op": "add", "path": "/ACL_TABLE/NO-NSW-PACL-V4/ports/-", "value": "Ethernet4,Ethernet8"}])
+
+        # Act
+        with patch.object(gu_common.genericUpdaterLogging, "get_logger", return_value=logger):
+            patchsorter = ps.StrictPatchSorter(config_wrapper, patch_wrapper)
+            patch_applier = gu.PatchApplier(patchsorter, changeapplier, config_wrapper, patch_wrapper)
+            patch_applier.apply(comma_patch)
+
+        # Assert
+        self.assertEqual(["Ethernet0", "Ethernet4", "Ethernet8"],
+                         state["config"]["ACL_TABLE"]["NO-NSW-PACL-V4"]["ports"])
+        split_warnings = [c[0][0] for c in logger.log_warning.call_args_list if "is stored as" in c[0][0]]
+        self.assertEqual(1, len(split_warnings), split_warnings)
+        self.assertIn("Ethernet4,Ethernet8", split_warnings[0])
+
     def test_apply__no_errors__update_successful(self):
         # Arrange
         changes = [Mock(), Mock()]
@@ -41,7 +101,7 @@ class TestPatchApplier(unittest.TestCase):
         # Assert
         patch_applier.config_wrapper.get_config_db_as_json.assert_has_calls([call(), call()])
         patch_applier.patch_wrapper.simulate_config_db_patch.assert_has_calls(
-            [call(Files.MULTI_OPERATION_CONFIG_DB_PATCH, Files.CONFIG_DB_AS_JSON)])
+            [call(Files.MULTI_OPERATION_CONFIG_DB_PATCH, Files.CONFIG_DB_AS_JSON, warn=True)])
         patch_applier.patchsorter.sort.assert_has_calls([call(Files.MULTI_OPERATION_CONFIG_DB_PATCH, trace_io=None)])
         patch_applier.changeapplier.apply.assert_called()
         patch_applier.patch_wrapper.verify_same_json.assert_has_calls(
@@ -81,12 +141,30 @@ class TestPatchApplier(unittest.TestCase):
         return gu.PatchApplier(patchsorter, changeapplier, config_wrapper, patch_wrapper)
 
 class TestConfigReplacer(unittest.TestCase):
-    def test_replace__json_not_fully_updated__failure(self):
+    def test_replace__leaf_list_item_with_comma__target_is_canonicalized_before_diffing(self):
         # Arrange
-        config_replacer = self.__create_config_replacer(verified_same_config=False)
+        current = {"COMMUNITY_SET": {"cs": {"community_member": ["65000:1", "65000:2"]}}}
+        # Same CONFIG_DB bytes as current, spelled as a single item
+        target = {"COMMUNITY_SET": {"cs": {"community_member": ["65000:1,65000:2"]}}}
+        config_wrapper = Mock()
+        config_wrapper.get_config_db_as_json.side_effect = [current, current]
+        config_wrapper.remove_null_values.return_value = []
+        patch_wrapper = Mock()
+        patch_wrapper.generate_patch.return_value = Files.MULTI_OPERATION_CONFIG_DB_PATCH
+        patch_wrapper.diff_json.return_value = []
+        patch_applier = Mock()
+        config_replacer = gu.ConfigReplacer(patch_applier, config_wrapper, patch_wrapper)
+        config_replacer.logger = Mock()
 
-        # Act and assert
-        self.assertRaises(gu.GenericConfigUpdaterError, config_replacer.replace, Files.CONFIG_DB_AFTER_MULTI_PATCH)
+        # Act
+        config_replacer.replace(target)
+
+        # Assert
+        patch_wrapper.generate_patch.assert_called_once_with(current, current)
+        patch_wrapper.diff_json.assert_called_once_with(current, current, field_custom_validations=None)
+        split_warnings = [c[0][0] for c in config_replacer.logger.log_warning.call_args_list if "is stored as" in c[0][0]]
+        self.assertEqual(1, len(split_warnings), split_warnings)
+        self.assertIn("'65000:1,65000:2'", split_warnings[0])
 
     def test_replace__no_errors__update_successful(self):
         # Arrange
