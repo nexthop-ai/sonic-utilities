@@ -1311,7 +1311,7 @@ class KeyLevelMoveGenerator:
             yield JsonMoveGroup(self.__class__.__name__, JsonMove(diff, OperationType.ADD, tokens, tokens))
 
     def _get_non_existing_keys_tokens(self, config1, config2, reverse):
-        for table in self.path_addressing.configdb_sorted_keys_by_backlinks("/", config1, reverse=reverse):
+        for table in self.path_addressing.configdb_sorted_tables_by_dependency(config1, reverse=reverse):
             for key in self.path_addressing.configdb_sorted_keys_by_backlinks("/" + table, config1, reverse=reverse):
                 if not(table in config2) or not (key in config2[table]):
                     yield [table, key]
@@ -1449,7 +1449,7 @@ class BulkKeyLevelMoveGenerator:
             yield group
 
     def _get_non_existing_keys_tokens(self, config1, config2, reverse):
-        for table in self.path_addressing.configdb_sorted_keys_by_backlinks("/", config1, reverse=reverse):
+        for table in self.path_addressing.configdb_sorted_tables_by_dependency(config1, reverse=reverse):
             for key in self.path_addressing.configdb_sorted_keys_by_backlinks("/" + table, config1, reverse=reverse):
                 if not(table in config2) or not (key in config2[table]):
                     yield [table, key]

@@ -550,6 +550,17 @@ class PathAddressing:
 
     def __init__(self, config_wrapper=None):
         self.config_wrapper = config_wrapper
+<<<<<<< HEAD
+=======
+        # Backlink and must counts per schema xpath, see _schema_ref_counts().
+        self._schema_ref_counts_cache = {}
+        self._schema_ref_counts_sy = None
+        # Tables referencing each table, and dependency orders already computed, for the same models; see
+        # configdb_sorted_tables_by_dependency().
+        self._table_order_sy = None
+        self._tables_referencing_cache = {}
+        self._table_order_cache = {}
+>>>>>>> f20ddec5 (NOS-23296: [gcu] order sorter candidates by schema references (#1367))
 
     @staticmethod
     def get_path_tokens(path):
@@ -690,6 +701,71 @@ class PathAddressing:
         # this anyhow.
         cmp = a["nsep"] - b["nsep"]
         return cmp
+
+    def configdb_sorted_tables_by_dependency(self, configdb: dict, reverse: bool = False, sy=None):
+        """
+        Returns the tables of the given config in dependency order, using the table-level references the YANG
+        schema declares (leafrefs). With reverse=True (adding) a table comes after every table it references;
+        with reverse=False (removing) it comes before them. Within those constraints, and among tables that
+        reference each other in a loop, the order of configdb_sorted_keys_by_backlinks() is kept.
+        """
+        base = self.configdb_sorted_keys_by_backlinks("/", configdb, reverse=reverse, sy=sy)
+        if self.config_wrapper is None:
+            return base
+
+        if sy is None:
+            sy = self._create_sonic_yang_with_loaded_models()
+        if sy is not self._table_order_sy:
+            self._table_order_sy = sy
+            self._tables_referencing_cache = {}
+            self._table_order_cache = {}
+        # The order depends only on which tables there are and on the models, and the sorter asks again at
+        # every step of its search.
+        cache_key = (tuple(base), reverse)
+        ordered = self._table_order_cache.get(cache_key)
+        if ordered is not None:
+            return list(ordered)
+
+        # refs_into[table] = the other tables of this config holding a leafref into table
+        tables = set(base)
+        refs_into = {table: self._tables_referencing(table, sy) & tables - {table} for table in base}
+        if reverse:
+            # adding: a table waits for the tables it references
+            waits_for = {table: {u for u in base if table in refs_into[u]} for table in base}
+        else:
+            # removing: a table waits for the tables referencing it
+            waits_for = refs_into
+
+        ordered = []
+        remaining = list(base)
+        while remaining:
+            done = set(ordered)
+            pick = next((t for t in remaining if waits_for[t] <= done), None)
+            if pick is None:
+                # The remaining tables reference each other in a loop; keep the backlink order for the next one.
+                pick = remaining[0]
+            ordered.append(pick)
+            remaining.remove(pick)
+        self._table_order_cache[cache_key] = ordered
+        return list(ordered)
+
+    def _tables_referencing(self, table, sy):
+        """
+        The tables holding a leafref into the given table, by the loaded models. A leafref's schema xpath is
+        /<module>:<container>/<TABLE>/..., so its table is the second token.
+        """
+        cache = self._tables_referencing_cache
+        refs = cache.get(table)
+        if refs is None:
+            try:
+                xpath = sy.configdb_path_to_xpath(self.create_path([table]), schema_xpath=True)
+            except KeyError:
+                refs = set()
+            else:
+                refs = {leafref.split("/")[2] for leafref in sy.find_schema_dependencies(xpath, match_ancestors=True)
+                        if len(leafref.split("/")) > 2}
+            cache[table] = refs
+        return refs
 
     def configdb_sorted_keys_by_backlinks(self, configdb_path: str, configdb: dict, reverse: bool = False,
                                           configdb_relative: bool = False, sy=None):
