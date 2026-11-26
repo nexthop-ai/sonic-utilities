@@ -781,6 +781,74 @@ Ethernet0  N/A
         assert result.output == expected_output
 
     @patch('sfputil.main.platform_chassis')
+<<<<<<< HEAD
+=======
+    @patch('sfputil.main.logical_port_name_to_physical_port_list', MagicMock(return_value=[1]))
+    @patch('sfputil.main.platform_sfputil', MagicMock(is_logical_port=MagicMock(return_value=1)))
+    def test_show_lpmode_use_lpmode_pin(self, mock_chassis):
+        mock_sfp = MagicMock()
+        mock_sfp.get_presence = MagicMock(return_value=True)
+        mock_sfp.get_lpmode_via_pin = MagicMock(return_value=True)
+        mock_chassis.get_sfp = MagicMock(return_value=mock_sfp)
+        runner = CliRunner()
+
+        result = runner.invoke(sfputil.cli.commands['show'].commands['lpmode'],
+                               ["-p", "Ethernet0", "--use-lpmode-pin"])
+        assert result.exit_code == 0
+        mock_sfp.get_lpmode_via_pin.assert_called_once_with()
+        mock_sfp.get_lpmode.assert_not_called()
+        expected_output = """Port       Low-power Mode
+---------  ----------------
+Ethernet0  On
+"""
+        assert result.output == expected_output
+
+        mock_sfp.get_lpmode_via_pin.reset_mock()
+        mock_sfp.get_lpmode_via_pin.side_effect = NotImplementedError
+        result = runner.invoke(sfputil.cli.commands['show'].commands['lpmode'],
+                               ["-p", "Ethernet0", "--use-lpmode-pin"])
+        assert result.exit_code == ERROR_NOT_IMPLEMENTED
+        mock_sfp.get_lpmode_via_pin.assert_called_once_with()
+        assert "This functionality is currently not implemented for this platform" in result.output
+
+        mock_sfp.get_lpmode_via_pin.reset_mock()
+        mock_sfp.get_lpmode_via_pin.side_effect = AttributeError
+        result = runner.invoke(sfputil.cli.commands['show'].commands['lpmode'],
+                               ["-p", "Ethernet0", "--use-lpmode-pin"])
+        assert result.exit_code == ERROR_NOT_IMPLEMENTED
+        mock_sfp.get_lpmode_via_pin.assert_called_once_with()
+        assert "This functionality is currently not implemented for this platform" in result.output
+
+    @patch('sfputil.main.platform_chassis')
+    @patch('sfputil.main.logical_port_name_to_physical_port_list', MagicMock(return_value=[1]))
+    @patch('sfputil.main.platform_sfputil', MagicMock(is_logical_port=MagicMock(return_value=1)))
+    @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=False))
+    def test_show_power_good(self, mock_chassis):
+        mock_sfp = MagicMock()
+        mock_sfp.get_presence = MagicMock(return_value=True)
+        mock_chassis.get_sfp = MagicMock(return_value=mock_sfp)
+        runner = CliRunner()
+
+        expected_output = "Port       Power Good\n---------  ------------\nEthernet0  {}\n"
+        for power_good, status in ((True, "Good"), (False, "Not Good"), (None, "N/A")):
+            mock_sfp.get_power_good_status = MagicMock(return_value=power_good)
+            result = runner.invoke(sfputil.cli.commands['show'].commands['power-good'], ["-p", "Ethernet0"])
+            assert result.exit_code == 0
+            assert result.output == expected_output.format(status)
+
+        mock_sfp.get_presence.return_value = False
+        result = runner.invoke(sfputil.cli.commands['show'].commands['power-good'], ["-p", "Ethernet0"])
+        assert result.exit_code == 0
+        assert result.output == expected_output.format("Not Present")
+
+        mock_sfp.get_presence.return_value = True
+        del mock_sfp.get_power_good_status
+        result = runner.invoke(sfputil.cli.commands['show'].commands['power-good'], ["-p", "Ethernet0"])
+        assert result.exit_code == ERROR_NOT_IMPLEMENTED
+        assert "This functionality is currently not implemented for this platform" in result.output
+
+    @patch('sfputil.main.platform_chassis')
+>>>>>>> 02fda94b (NOS-5167: add pddf_xcvrutil power-good CLI (#637))
     @patch('sfputil.main.logical_port_to_physical_port_index', MagicMock(return_value=1))
     @patch('sfputil.main.is_port_type_rj45', MagicMock(return_value=True))
     def test_power_RJ45(self, mock_chassis):

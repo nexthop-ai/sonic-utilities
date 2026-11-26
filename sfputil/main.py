@@ -1223,6 +1223,7 @@ def lpmode(port, use_lpmode_pin):
 
     click.echo(tabulate(output_table, table_header, tablefmt='simple'))
 
+<<<<<<< HEAD
 def show_firmware_version(physical_port):
     try:
         sfp = platform_chassis.get_sfp(physical_port)
@@ -1235,6 +1236,162 @@ def show_firmware_version(physical_port):
     except NotImplementedError:
         click.echo("This functionality is currently not implemented for this platform")
         sys.exit(ERROR_NOT_IMPLEMENTED)
+=======
+
+# 'power-good' subcommand
+@show.command()
+@click.option('-p', '--port', metavar='<port_name>', help="Display SFP power-good status for port <port_name> only")
+def power_good(port):
+    """Display power-good status of SFP transceiver(s)"""
+    output_table = []
+    table_header = ["Port", "Power Good"]
+
+    if port is None:
+        logical_port_list = natsort.natsorted(platform_sfputil.logical)
+    else:
+        if platform_sfputil.is_logical_port(port) == 0:
+            click.echo("Error: invalid port '{}'\n".format(port))
+            print_all_valid_port_values()
+            sys.exit(ERROR_INVALID_PORT)
+
+        logical_port_list = [port]
+
+    for logical_port_name in logical_port_list:
+        physical_port_list = logical_port_name_to_physical_port_list(logical_port_name)
+        if physical_port_list is None:
+            click.echo("Error: No physical ports found for logical port '{}'".format(logical_port_name))
+            return
+
+        if is_port_type_rj45(logical_port_name):
+            output_table.append([logical_port_name, "N/A"])
+            continue
+
+        ganged = len(physical_port_list) > 1
+        for i, physical_port in enumerate(physical_port_list, 1):
+            port_name = get_physical_port_name(logical_port_name, i, ganged)
+            sfp = platform_chassis.get_sfp(physical_port)
+            try:
+                if not sfp.get_presence():
+                    output_table.append([port_name, "Not Present"])
+                    continue
+                power_good = sfp.get_power_good_status()
+            except (NotImplementedError, AttributeError) as e:
+                click.echo("This functionality is currently not implemented for this platform "
+                           "({}: {})".format(type(e).__name__, e))
+                sys.exit(ERROR_NOT_IMPLEMENTED)
+
+            if power_good is None:
+                output_table.append([port_name, "N/A"])
+            else:
+                output_table.append([port_name, "Good" if power_good else "Not Good"])
+
+    click.echo(tabulate(output_table, table_header, tablefmt='simple'))
+
+
+def reject_positional_with_selectors(port_name, interface_selectors,
+                                     vendor_pn_selectors):
+    """Reject a positional <port_name> supplied together with -i/-p.
+
+    The legacy single-port positional form and the -i/-p multi-port
+    selectors are mutually exclusive (doc/sfputil/fw-mgmt-enhancement.md
+    section 7.5.1). Supplying both is a usage error: the command is
+    rejected up front, so no port is selected, no firmware file is read
+    and no firmware operation is started.
+    """
+    if not port_name:
+        return
+    conflicting = []
+    if interface_selectors:
+        conflicting.append('-i')
+    if vendor_pn_selectors:
+        conflicting.append('-p')
+    if not conflicting:
+        return
+    click.echo(
+        "Error: positional port '{}' cannot be combined with {}; the "
+        "single-port and multi-port forms are mutually exclusive".format(
+            port_name, '/'.join(conflicting)))
+    sys.exit(ERROR_INVALID_PORT)
+
+
+def show_firmware_version(port_name, interface_filter=None, vendor_pn_filter=None,
+                          tabulate_output=False, verbose=False):
+    ports = get_present_sfp_ports_names_list()
+    if port_name:
+        if port_name not in ports:
+            click.echo("Error: SFP not present on port '{}'".format(port_name))
+            sys.exit(ERROR_INVALID_PORT)
+        ports = [port_name]
+
+    present_ports = ports
+    transceiver_info_map, _, duplicate_ports = get_transceiver_info_for_ports(ports, unique=False)
+    ports = get_interface_names_sorted_by_interface_number(
+        [port for port in present_ports if port not in duplicate_ports])
+
+    if interface_filter:
+        ports = list(set(ports) & set(interface_filter))
+        if not ports:
+            click.echo("No matching ports")
+            return
+
+    if vendor_pn_filter:
+        ports = [port for port in ports
+                 if (transceiver_info_map.get(port) or {}).get('model') in vendor_pn_filter]
+        if not ports:
+            click.echo("No matching ports")
+            return
+
+    fw_query_ports = [port for port in ports if port in transceiver_info_map]
+    module_firmware_info_map, ports_failed_to_get_module_firmware_info = \
+        get_module_firmware_info_for_ports(fw_query_ports, verbose=verbose)
+
+    if tabulate_output:
+        header = [
+            'Interface', 'Vendor Name', 'Vendor PN', 'Vendor SN',
+            'Image A', 'Image B', 'Active', 'Running', 'Committed'
+        ]
+        table_data = []
+
+    # Sort the ports by interface number
+    ports = get_interface_names_sorted_by_interface_number(ports)
+
+    for port in ports:
+        transceiver_info = transceiver_info_map.get(port)
+        fw_info = module_firmware_info_map.get(port)
+        (vendor_name, vendor_pn, vendor_sn, image_a, image_b,
+         active_fw, inactive_fw, factory_image, running_image,
+         committed_image) = get_fwversion_fields(
+            transceiver_info, fw_info)
+
+        if tabulate_output:
+            table_data.append([
+                port,
+                vendor_name,
+                vendor_pn,
+                vendor_sn,
+                image_a,
+                image_b,
+                active_fw,
+                running_image,
+                committed_image
+            ])
+        else:
+            click.echo("Interface: {}".format(port))
+            click.echo("Vendor Name: {}".format(vendor_name))
+            click.echo("Vendor PN: {}".format(vendor_pn))
+            click.echo("Vendor SN: {}".format(vendor_sn))
+            click.echo("Image A Version: {}".format(image_a))
+            click.echo("Image B Version: {}".format(image_b))
+            click.echo("Factory Image Version: {}".format(factory_image))
+            click.echo("Running Image: {}".format(running_image))
+            click.echo("Committed Image: {}".format(committed_image))
+            click.echo("Active Firmware: {}".format(active_fw))
+            click.echo("Inactive Firmware: {}".format(inactive_fw))
+            click.echo()
+
+    if tabulate_output:
+        click.echo(tabulate(table_data, header, tablefmt='simple'))
+>>>>>>> 02fda94b (NOS-5167: add pddf_xcvrutil power-good CLI (#637))
 
 # 'fwversion' subcommand
 @show.command()
